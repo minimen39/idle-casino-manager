@@ -6,6 +6,10 @@
  *   'money:changed'      {worldId, money}
  *   'diamonds:changed'   {diamonds}
  *   'purchase'           {worldId, key, kind}          kind: 'venue'|'station'|'staff'|'system'
+ *                        COALESCED (bus.emitCoalesced): a burst of buys inside
+ *                        one task fires a single 'purchase' on the next
+ *                        microtask, carrying the last buy's payload. Listeners
+ *                        must therefore re-read world state, not count events.
  *   'tier:up'            {worldId, tier}
  *   'world:unlocked'     {worldId}
  *   'world:switched'     {worldId}
@@ -19,6 +23,26 @@
 
 /** @type {Map<string, Function[]>} */
 const listeners = new Map();
+
+/** Names with a coalesced emit in flight -> the payload the flush will carry. */
+const pending = new Map();
+let flushScheduled = false;
+
+/** Microtask scheduler with a setTimeout fallback for ancient engines. */
+function scheduleFlush() {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  const run = () => {
+    flushScheduled = false;
+    if (pending.size === 0) return;
+    // Snapshot + clear first: a listener is allowed to emit again.
+    const batch = Array.from(pending.entries());
+    pending.clear();
+    for (let i = 0; i < batch.length; i++) bus.emit(batch[i][0], batch[i][1]);
+  };
+  if (typeof queueMicrotask === 'function') queueMicrotask(run);
+  else Promise.resolve().then(run).catch(() => {});
+}
 
 /** Guard so a throwing listener never kills the game loop. */
 function safeCall(fn, payload, name) {
@@ -91,9 +115,31 @@ export const bus = {
     }
   },
 
+  /**
+   * Fire an event AT MOST ONCE per synchronous burst, on the next microtask.
+   * Repeat calls within the same task collapse into a single emit carrying the
+   * LAST payload — so only use it for events whose listeners re-read the world
+   * state anyway (never for per-item notifications somebody counts).
+   *
+   * Why it exists: "Buy x10" runs ten synchronous economy.buy() calls, and the
+   * 'purchase' listener in main.js rebuilds the whole floor plan (a candidate-
+   * width search + grid flood fill + a BFS flow field per venue node). Ten of
+   * those back to back on the main thread is a visible stall on the phone.
+   * Coalescing turns the whole tap into one rebuild.
+   *
+   * @param {string} name
+   * @param {any} [payload]
+   */
+  emitCoalesced(name, payload) {
+    if (typeof name !== 'string') return;
+    pending.set(name, payload);
+    scheduleFlush();
+  },
+
   /** Remove every listener (used by resetState / hot reloads). */
   clear() {
     listeners.clear();
+    pending.clear();
   },
 
   /** Debug helper: how many listeners a name currently has. */

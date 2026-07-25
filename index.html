@@ -2,8 +2,53 @@
 <html lang="he" dir="rtl">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1" />
-  <title>Idle Casino Manager - מנהל קזינו סרק</title>
+  <!--
+    NO `user-scalable=no, maximum-scale=1` here, deliberately (gap G2).
+
+    Locking page zoom is the usual reflex for a canvas game, but this app does
+    not need it and pays a real accessibility price for it: the smallest text
+    in the drawer and the coach cards bottoms out at 11px (--fs-xs), which in
+    Hebrew — a script with no ascender/descender cues to read a glyph by — is
+    the one place a low-vision player has nothing left to fall back on.
+
+    It costs nothing here because the canvas already owns its own gestures:
+    `#game { touch-action: none }` (styles.css) re-asserted by main.js on the
+    element itself, so a pinch that STARTS on the floor is consumed by the
+    renderer's own camera zoom and never reaches the browser. Browser page
+    zoom is therefore only reachable by pinching the DOM chrome (HUD, dock,
+    build sheet) — surfaces that have no gesture of their own.
+
+    Consequences worth knowing (all inherent to page zoom, none regressions):
+      - `position: fixed` chrome (#hud, #actions, .build-panel, .coach-layer)
+        stays fixed to the LAYOUT viewport, not the visual one, so zoomed in
+        the player pans to reach the far edge of the dock. Nothing reflows:
+        vw/dvh and getBoundingClientRect() are all layout-viewport units, so
+        the coach spotlight stays glued to its anchor at any zoom level.
+      - Double-tap-to-zoom comes back on the DOM chrome. The canvas is immune
+        (main.js preventDefaults `dblclick` on it), and the one double-tap
+        target that matters, .drawer-handle, resolves its toggle on pointerup
+        rather than on the synthesised click (see panels.js), so a double-tap
+        there reads as two clean toggles instead of one swallowed tap.
+    Keep width=device-width — it is what tells Chrome this page is already
+    mobile-optimised, and therefore what keeps the 300ms tap delay off.
+  -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <!--
+    Locale-neutral shell. Everything below that names the game in prose is
+    English-default on purpose: a crawler, a WhatsApp link-preview fetcher or
+    a social card renderer never runs our JavaScript, so whatever is baked in
+    here is what every non-Hebrew reader sees forever. src/main.js reapplies
+    the real localised strings at runtime — applyDocumentTitle() sets
+    document.title from t('app.title') (so Hebrew players still get the
+    Hebrew title in the tab and the task switcher), and applyManifestLink()
+    swaps both <link rel="manifest"> and the apple-mobile-web-app-title meta
+    to the active locale. The manifest href below MUST stay
+    ./manifest.webmanifest: that swap is a no-op-if-unchanged comparison
+    against './manifest.<locale>.webmanifest', and the Hebrew manifest is the
+    correct pre-JS default for the app's default locale.
+  -->
+  <title>Idle Casino Manager</title>
+  <meta name="description" content="Build and run your own isometric idle casino: lay out the floor, hire staff, grow the crowd and unlock a gambling empire." />
 
   <!-- PWA manifest -->
   <link rel="manifest" href="./manifest.webmanifest" />
@@ -17,25 +62,35 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="מנהל קזינו" />
+  <!-- Swapped to the active locale's short name by applyManifestLink(). -->
+  <meta name="apple-mobile-web-app-title" content="Idle Casino" />
 
-  <!-- Open Graph / WhatsApp link preview -->
-  <meta property="og:title" content="מנהל קזינו — אימפריית הימורים" />
-  <meta property="og:description" content="נהלו את הקזינו שלכם, בנו אולם משחקים תוסס, גייסו צוות ופתחו את אימפריית ההימורים שלכם במשחק סרק איזומטרי." />
+  <!-- Open Graph / WhatsApp link preview. Static by nature: link unfurlers
+       parse the raw HTML and never execute JS, so no runtime i18n can reach
+       these. English is the widest-reach default; og:locale:alternate tells
+       a locale-aware unfurler that a Hebrew rendering of the app exists. -->
+  <meta property="og:title" content="Idle Casino Manager" />
+  <meta property="og:description" content="Build and run your own isometric idle casino: lay out the floor, hire staff, grow the crowd and unlock a gambling empire." />
   <meta property="og:image" content="https://minimen39.github.io/idle-casino-manager/icons/icon-512.png" />
   <meta property="og:type" content="website" />
+  <meta property="og:locale" content="en_US" />
+  <meta property="og:locale:alternate" content="he_IL" />
 
   <!-- Twitter card -->
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="מנהל קזינו — אימפריית הימורים" />
-  <meta name="twitter:description" content="נהלו את הקזינו שלכם, בנו אולם משחקים תוסס, גייסו צוות ופתחו את אימפריית ההימורים שלכם במשחק סרק איזומטרי." />
+  <meta name="twitter:title" content="Idle Casino Manager" />
+  <meta name="twitter:description" content="Build and run your own isometric idle casino: lay out the floor, hire staff, grow the crowd and unlock a gambling empire." />
   <meta name="twitter:image" content="https://minimen39.github.io/idle-casino-manager/icons/icon-512.png" />
 
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <!-- Verbatim copies of the `app.noscript` key in src/core/locales/{he,en}.js.
+       No script runs here by definition, so the strings cannot come from t();
+       both languages are shown because nothing can know which one to pick.
+       Edit one, edit the other. -->
   <noscript>
-    <div lang="he" dir="rtl">המשחק דורש JavaScript מופעל כדי לרוץ. אנא הפעילו JavaScript בדפדפן שלכם וטענו מחדש את הדף.</div>
+    <div lang="he" dir="rtl">המשחק דורש JavaScript כדי לרוץ. הפעל JavaScript בדפדפן וטען מחדש את הדף.</div>
     <div lang="en" dir="ltr">This game needs JavaScript to run. Please enable JavaScript in your browser and reload the page.</div>
   </noscript>
 

@@ -21,7 +21,7 @@
 
 import { CONFIG, VENUES, STAFF } from '../core/config.js';
 import { bus, toast } from '../core/events.js';
-import { state } from '../core/state.js';
+import { applyBoost } from '../core/state.js';
 import { incomeRate, addMoney, fmtMoney } from '../core/economy.js';
 import { t } from '../core/i18n.js';
 
@@ -194,23 +194,18 @@ function penaltyFor(w, def) {
   return Math.floor(Math.max(0, p));
 }
 
-/** Start / extend the global income boost (used by the VIP window). */
+/**
+ * Start / extend the global income boost (used by the VIP window).
+ * The never-downgrade policy lives in state.applyBoost — this module used to
+ * carry its own copy of it, which is how a 2x escort could clash with the
+ * other writers' "just overwrite it" rule.
+ */
 function startIncomeBoost(mult, seconds) {
   const m = num(mult, 1);
   const s = num(seconds, 0);
   if (m <= 1 || s <= 0) return;
-  const boosts = state && state.boosts;
-  const now = Date.now();
-  if (boosts && boosts.income) {
-    const b = boosts.income;
-    const active = num(b.until, 0) > now && num(b.mult, 1) > 1;
-    if (active && num(b.mult, 1) >= m) {
-      b.until = num(b.until, now) + s * 1000;
-    } else {
-      b.mult = m;
-      b.until = now + s * 1000;
-    }
-  }
+  // A weaker boost is refused outright, so do not announce one that never ran.
+  if (!applyBoost('income', m, s)) return;
   bus.emit('boost:started', { kind: 'income', mult: m, seconds: s });
 }
 
@@ -586,6 +581,8 @@ export class LiveEventSim {
       flagged: false,
       progress: 0,
       drained: 0,
+      /** Sub-1 remainder of the card counter's per-frame drain (see _updateCounter). */
+      drainAcc: 0,
       variant: '',
       removeIn: num(TUNING.caughtLinger, 0.9),
       spawnText: '',
@@ -767,10 +764,21 @@ export class LiveEventSim {
     const drainFrac = Math.max(0, num(def.drainPerSecond, 0));
     if (w && drainFrac > 0) {
       const amount = rateOf(w) * drainFrac * dt;
-      const take = Math.min(Math.max(0, num(w.money, 0)), amount);
-      if (take > 0.5) {
-        grant(w, -Math.floor(take));
-        a.drained += Math.floor(take);
+      // Accumulate the fraction instead of flooring it away every frame.
+      // grant() only moves whole money, so a per-frame `Math.floor(rate * 0.22
+      // * 1/60)` stayed 0 until the world earned >272/sec — i.e. the counter's
+      // headline mechanic was a no-op for all of world 0 and early world 1,
+      // and the escape toast always reported a drain of 0.
+      const wallet = Math.max(0, num(w.money, 0));
+      // Bank the remainder, but never bank more than the wallet can pay: an
+      // empty world must not build up a debt that empties it the moment the
+      // player earns anything.
+      a.drainAcc = Math.min(Math.max(0, num(a.drainAcc, 0)) + Math.max(0, amount), wallet + 1);
+      const whole = Math.floor(Math.min(wallet, a.drainAcc));
+      if (whole > 0) {
+        a.drainAcc -= whole;
+        grant(w, -whole);
+        a.drained += whole;
       }
     }
     this._autoProgress(a, dt);

@@ -11,9 +11,17 @@
  * ------------------------------------------------------------------ */
 
 export const CONFIG = {
-  /** localStorage key + schema version. */
+  /**
+   * localStorage key + schema version.
+   *
+   * The KEY never changes (changing it orphans every existing save); only
+   * `version` moves. state.migrate() uses it to tell "this field is absent
+   * because the save predates it" from "this field is absent because the
+   * player really has it off" — see the tutorial back-fill there.
+   *   v1 -> v2: added state.tutorial (first-run guide) + state.ext + offlineDebt.
+   */
   storageKey: 'idleCasino.v1',
-  version: 1,
+  version: 2,
 
   /** Core loop timing. */
   loop: {
@@ -261,12 +269,48 @@ export const CONFIG = {
     adCooldownMs: 240000,
     adBoost: { mult: 2, seconds: 180 },
     adDiamonds: 2,
-    noAdsPriceKey: 'shop.price.noAds',
+    /**
+     * IAP prices — the single source of truth, still OUT of the locale tables
+     * (they used to live there as `shop.price.*` strings, so the same pack was
+     * a bare "₪9.90" string in one table and "$2.99" in the other with nothing
+     * tying them together). What lives here instead is one PRICE SET per
+     * currency: `pricing[currency]` holds every real-money amount in MINOR
+     * units of that currency (agorot / cents).
+     *
+     * The owner's rule: the store the player sees follows the LANGUAGE —
+     * shekels for Hebrew, dollars for English (`localeCurrency` below). These
+     * are independent price POINTS chosen per market, not an FX conversion of
+     * each other, which is why they are authored side by side rather than
+     * derived: $1.99 is the conventional US ladder step whose ILS counterpart
+     * is ₪19.90, and neither number should move when the other does.
+     *
+     * A product therefore has exactly ONE price per currency, and switching
+     * language switches the whole set at once — it can never re-price a single
+     * product against its neighbours mid-session. Use `priceSetFor()` to read
+     * this; never index `pricing` directly with a locale id.
+     */
+    localeCurrency: { he: 'ILS', en: 'USD' },
+    /** Used when the active locale is unknown or its currency has no set. */
+    defaultCurrency: 'ILS',
+    pricing: {
+      // ₪19.90 / ₪9.90 / ₪39.90 / ₪99.90 / ₪299.90
+      ILS: {
+        noAds: 1990,
+        packs: { small: 990, medium: 3990, large: 9990, mega: 29990 }
+      },
+      // $1.99 / $0.99 / $3.99 / $9.99 / $29.99
+      USD: {
+        noAds: 199,
+        packs: { small: 99, medium: 399, large: 999, mega: 2999 }
+      }
+    },
+    /** Pack identity + what it grants. The PRICE is in `pricing` above, keyed
+     *  by `key`, so a new currency is one entry rather than a field per pack. */
     diamondPacks: [
-      { key: 'small',  nameKey: 'shop.pack.small',  priceKey: 'shop.price.small',  amount: 80 },
-      { key: 'medium', nameKey: 'shop.pack.medium', priceKey: 'shop.price.medium', amount: 500 },
-      { key: 'large',  nameKey: 'shop.pack.large',  priceKey: 'shop.price.large',  amount: 1500 },
-      { key: 'mega',   nameKey: 'shop.pack.mega',   priceKey: 'shop.price.mega',   amount: 5000 }
+      { key: 'small',  nameKey: 'shop.pack.small',  amount: 80 },
+      { key: 'medium', nameKey: 'shop.pack.medium', amount: 500 },
+      { key: 'large',  nameKey: 'shop.pack.large',  amount: 1500 },
+      { key: 'mega',   nameKey: 'shop.pack.mega',   amount: 5000 }
     ],
     /** Things diamonds buy. */
     diamondSpends: [
@@ -292,6 +336,29 @@ export const CONFIG = {
     highlightPulse: 2.2
   }
 };
+
+/**
+ * Resolve the real-money price set a given locale shops in.
+ *
+ * The ONE place that maps a language to a currency, so no caller has to know
+ * that Hebrew means ILS — they ask for a locale and get back a complete,
+ * self-consistent set. It is deliberately total: an unknown locale, or a
+ * currency with no authored set, falls back to `defaultCurrency` rather than
+ * returning undefined amounts, because a blank price tag in the shop is a
+ * worse failure than a wrong-currency one. Kept here (a pure data module with
+ * no imports) instead of in i18n.js so config.js stays a leaf.
+ *
+ * @param {string} localeId 'he' | 'en' — typically i18n's getLocale()
+ * @returns {{currency: string, noAds: number, packs: Object<string, number>}}
+ */
+export function priceSetFor(localeId) {
+  const m = CONFIG.monetization;
+  const fallback = m.defaultCurrency;
+  const wanted = (m.localeCurrency && m.localeCurrency[localeId]) || fallback;
+  const currency = m.pricing[wanted] ? wanted : fallback;
+  const set = m.pricing[currency];
+  return { currency: currency, noAds: set.noAds, packs: set.packs };
+}
 
 /* ------------------------------------------------------------------ *
  *  TIERS — visual progression inside a single branch (spec section 2a)

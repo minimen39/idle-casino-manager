@@ -28,6 +28,8 @@ let modalContainer = null;
 let mapBackdrop = null;
 let mapGrid = null;
 let mapTitleEl = null;
+/** Guards mount() against double-subscribing the bus (see mount()). */
+let mounted = false;
 
 /** worldId -> { unlocked: bool, moneyEl, incomeEl, missingEl, btn } for the
  *  currently-rendered card, so money-only updates can patch text/disabled
@@ -87,9 +89,10 @@ function switchWorld(id) {
   if (state.activeWorld === id) return;
   state.activeWorld = id;
   save();
+  // The 'world:switched' subscription in mount() rebuilds the grid for us;
+  // calling renderGrid() here as well tore it down twice per tap.
   bus.emit('world:switched', { worldId: id });
   bus.emit('ui:refresh', {});
-  renderGrid();
 }
 
 /**
@@ -360,6 +363,11 @@ function showWorldMap() {
 
 export function mount(mountRoot) {
   root = mountRoot || null;
+  // A second mount() would double every bus subscription below (each event
+  // rebuilding the grid twice) and add a second onLocaleChanged listener that
+  // nothing ever removes. main.js mounts once; this keeps it true.
+  if (mounted) return;
+  mounted = true;
 
   modalContainer = document.getElementById('modals');
   if (!modalContainer) {
@@ -387,8 +395,16 @@ export function mount(mountRoot) {
   bus.on('world:switched', () => {
     if (mapBackdrop) renderGrid();
   });
+  // 'ui:refresh' is emitted by anything that changes the wallet or the build
+  // state (panels.js on a purchase, monetization.js on a diamond spend,
+  // state.js on load) — it is NOT a structural change to the world list, so it
+  // gets the in-place patch too. Rebuilding here re-introduced exactly the
+  // dropped-click bug renderGrid()'s comment documents: a refresh landing
+  // between touchstart and touchend replaces the button under the finger and
+  // "עבור לסניף"/"פתח סניף" silently no-ops. updateValues() falls back to a
+  // full rebuild by itself if a card's lock state actually changed.
   bus.on('ui:refresh', () => {
-    if (mapBackdrop) renderGrid();
+    if (mapBackdrop) updateValues();
   });
   // Optional integration hook: other modules may `bus.emit('ui:openWorldMap')`
   // instead of importing openWorldMap() directly.
@@ -404,8 +420,15 @@ export function mount(mountRoot) {
   });
 }
 
+/**
+ * Called from main.js's refreshUI() (~4x/second while the map is open). Must
+ * never rebuild the grid: see renderGrid()'s comment — a teardown between a
+ * touchstart and its touchend swallows the click. updateValues() patches text
+ * and the disabled flag in place and self-escalates to renderGrid() only when
+ * a card's lock state actually changed.
+ */
 export function update() {
-  if (mapBackdrop) renderGrid();
+  if (mapBackdrop) updateValues();
 }
 
 /** Integrator hook: open the world map modal (e.g. from a HUD button). */

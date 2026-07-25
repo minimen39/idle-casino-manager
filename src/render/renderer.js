@@ -1648,8 +1648,29 @@ const ANIM_SPRITE = {
  *  Chibi figures
  * ------------------------------------------------------------------ */
 
+/**
+ * Below this many CSS px per figure unit the chibi's uniform detail — the
+ * hi-vis band (0.26u), the tie, the cap brim (0.2u) — is at or under one
+ * device pixel, so all three roles collapse into "small dark blob" and the
+ * screen-space marker is the ONLY thing carrying role. That is a single point
+ * of failure: a marker that gets staggered, culled or turned off takes role
+ * identity with it. Under this threshold the sprite repaints its torso as a
+ * flat role-coloured EMBLEM with a minimum screen size, using the same shape
+ * vocabulary as the markers (diamond / shield / broom) so the two reinforce
+ * one cue instead of teaching two.
+ *
+ * 9 px/unit ~= a 25 CSS px tall figure, which is where the band stops reading.
+ */
+const ROLE_LOD_PX = 9;
+/** Minimum on-screen radius (CSS px) of that emblem. */
+const ROLE_LOD_MIN = 5.5;
+
 const U_GUEST = 8.0;
-const U_WORKER = 8.6;
+// Staff used to be 8.6 — a 7.5% edge over a guest, i.e. 0.8 CSS px at the
+// phone's fit zoom, which is no silhouette cue at all. Staff are a distinct
+// CLASS of actor, so they get a visibly taller sprite on top of the uniform
+// colour + square shoulders + hi-vis band.
+const U_WORKER = 9.6;
 const U_VIP = 10.6;
 const U_ACTOR = 10.0;
 
@@ -1658,9 +1679,15 @@ const SKINS = ['#ffcf9e', '#f2b98a', '#d99a6c', '#b9784d', '#8c5a3a'];
 
 /**
  * Style record for a figure.
- * { body, skin, hair, hat, hatType:'none'|'cap'|'visor'|'crown'|'mask', badge, tie }
+ * { body, skin, hair, hat,
+ *   hatType:'none'|'cap'|'visor'|'crown'|'mask'|'tophat'|'mic'|'beanie',
+ *   badge, tie, band, shape:'round'|'uniform'|'coat', prop:'none'|'bag' }
+ *
+ * `band` (hi-vis chest stripe), `shape` (torso silhouette) and `hatType` are the
+ * NON-COLOUR half of role identity: they survive greyscale, colour blindness and
+ * a 4 CSS px torso, which a hue never does.
  */
-function styleOf(body, skin, hair, hat, hatType, badge, tie) {
+function styleOf(body, skin, hair, hat, hatType, badge, tie, band, shape, prop) {
   return {
     body,
     bodyD: shade(body, -0.2),
@@ -1671,39 +1698,93 @@ function styleOf(body, skin, hair, hat, hatType, badge, tie) {
     hat: hat || null,
     hatType: hatType || 'none',
     badge: badge || null,
-    tie: tie || null
+    tie: tie || null,
+    band: band || null,
+    shape: shape || 'round',
+    prop: prop || 'none'
   };
 }
 
+/**
+ * Staff uniforms are separated from the crowd by LIGHTNESS, not by hue.
+ * The old palette encoded role as a torso hue only, and two of the three roles
+ * landed inside the random guest palette (guard #2f6fd0 h216 vs the blue guest
+ * h210; cleaner #2fc0b0 h173 vs the cyan guest h190) — so a guard read as a blue
+ * guest. Every floor/felt/chair material is forced to L>=0.40 by paletteFor()
+ * and guests to L~0.50 by guestStyle(), so pushing the two coloured uniforms to
+ * L~0.20 puts them in a band nothing else in the scene occupies. Each role also
+ * gets its own hi-vis band colour, headwear and prop so the identification never
+ * depends on the hue channel alone.
+ */
 const ROLE_STYLE = {
-  dealer: styleOf('#f7f9fb', '#ffcf9e', '#2a2333', '#22222e', 'visor', null, '#e6355e'),
-  guard: styleOf('#2f6fd0', '#e8b184', '#1f1a2b', '#1b3f7d', 'cap', '#ffd23f', null),
-  cleaner: styleOf('#2fc0b0', '#d99a6c', '#3a2a1e', '#eef3f5', 'cap', null, null)
+  // white shirt + dark waistcoat + red bowtie + green visor: the croupier read
+  dealer: styleOf('#f7f9fb', '#ffcf9e', '#2a2333', '#1f6b46', 'visor', null, '#d81e5b', '#1b2130', 'uniform'),
+  // navy uniform + gold hi-vis band + peaked cap
+  guard: styleOf('#0d2b52', '#e8b184', '#1f1a2b', '#0a1f3d', 'cap', '#ffd400', null, '#ffd400', 'uniform'),
+  // graphite overalls + orange hi-vis band + white cap (plus the mop prop)
+  cleaner: styleOf('#2b2f38', '#d99a6c', '#3a2a1e', '#e8edf0', 'cap', null, null, '#ff7a00', 'uniform')
 };
 
-const PERFORMER = styleOf('#ff4d8b', '#ffcf9e', '#22202c', '#ffd23f', 'crown', null, null);
+// The gold crown used to be shared by the showroom performer, the live-event VIP
+// and every VIP guest — three unrelated things reading as the same character.
+// It is now reserved for the live-event VIP; the performer gets a headset mic
+// and VIP guests get a top hat.
+const PERFORMER = styleOf('#ff4d8b', '#ffcf9e', '#22202c', '#ffd23f', 'mic', null, '#ffd23f', null, 'coat');
 
 const ACTOR_STYLE = {
-  thief: styleOf('#3d3652', '#e8b184', '#16141f', '#16141f', 'mask', null, null),
-  brinks: styleOf('#8d97a3', '#e8b184', '#2a2e33', '#3a4048', 'cap', '#ffd23f', null),
-  counter: styleOf('#7a4fd0', '#f2b98a', '#2a2333', null, 'none', null, null),
-  angry: styleOf('#e0533a', '#ffbe8a', '#5a2a18', null, 'none', null, null),
-  vip: styleOf('#2b2438', '#ffcf9e', '#22202c', '#ffd23f', 'crown', null, '#ffd23f')
+  thief: styleOf('#141019', '#e8b184', '#16141f', '#16141f', 'mask', null, null, null, 'round'),
+  brinks: styleOf('#3a4048', '#e8b184', '#2a2e33', '#2a3038', 'cap', '#ffd23f', null, '#ffd400', 'uniform'),
+  counter: styleOf('#3b1f6e', '#f2b98a', '#2a2333', null, 'none', null, null, null, 'coat'),
+  angry: styleOf('#7a1f10', '#ffbe8a', '#5a2a18', null, 'none', null, null, null, 'round'),
+  vip: styleOf('#2b2438', '#ffcf9e', '#22202c', '#ffd23f', 'crown', null, '#ffd23f', null, 'coat')
 };
+
+/**
+ * Guest archetypes. The sim hands the renderer nothing but a random palette
+ * colour, so the crowd was a hue lottery with zero silhouette variety. Deriving
+ * a stable archetype from the guest's id seed costs nothing, is deterministic
+ * for the life of the guest, and gives the crowd four readable body shapes —
+ * which also stops "one more anonymous blob" from being the only thing a player
+ * can say about anybody on the floor.
+ */
+const GUEST_ARCHETYPES = [
+  { hat: null, hatType: 'none', shape: 'round', prop: 'none', tie: null },
+  { hat: '#2a2f45', hatType: 'cap', shape: 'round', prop: 'none', tie: null },
+  { hat: null, hatType: 'none', shape: 'round', prop: 'bag', tie: null },
+  { hat: '#20242e', hatType: 'beanie', shape: 'coat', prop: 'none', tie: '#e8edf0' }
+];
 
 const _guestStyleCache = new Map();
 
 function guestStyle(color, seedN) {
-  let s = _guestStyleCache.get(color);
+  const arche = Math.abs((seedN * 13) | 0) % GUEST_ARCHETYPES.length;
+  const key = color + '|' + arche;
+  let s = _guestStyleCache.get(key);
   if (!s) {
     // Guest colors used to go straight to styleOf() with no saturation
     // treatment, unlike every world color (which is always pushed through
     // vivid()). Roughly half of CONFIG.guest.palette is desaturated
     // tan/beige, so the crowd read as muddy khaki against the (now bright)
     // floor. Force the same high-chroma treatment here.
-    const body = vivid(color, 0.7, 0.55);
-    s = styleOf(body, SKINS[Math.abs(seedN | 0) % SKINS.length], HAIR[Math.abs((seedN * 7) | 0) % HAIR.length], null, 'none', null, null);
-    if (_guestStyleCache.size < 256) _guestStyleCache.set(color, s);
+    // The target lightness dropped 0.55 -> 0.50 because paletteFor() forces
+    // floorA to S0.68/L0.55 — i.e. guests were EXACTLY the swatch of the carpet
+    // they stood on in the warm/speakeasy worlds. 0.50 also keeps the crowd well
+    // clear of the L~0.20 staff uniforms.
+    const body = vivid(color, 0.74, 0.5);
+    const A = GUEST_ARCHETYPES[arche];
+    s = styleOf(
+      body,
+      SKINS[Math.abs(seedN | 0) % SKINS.length],
+      HAIR[Math.abs((seedN * 7) | 0) % HAIR.length],
+      A.hat,
+      A.hatType,
+      null,
+      A.tie,
+      null,
+      A.shape,
+      A.prop
+    );
+    if (_guestStyleCache.size < 256) _guestStyleCache.set(key, s);
   }
   return s;
 }
@@ -1719,33 +1800,64 @@ function guestStyle(color, seedN) {
  *   old per-character tinted edge) only when not supplied.
  */
 function chibiFigure(g, ix, iy, u, S, bob, t, seedN, moving, sh, ol) {
+  // One walk phase drives the legs, the torso squash AND the contact shadow.
+  // The legs used to be two static rects, so a walking dealer was pixel-identical
+  // to a standing one and the only motion cue was a 2-px vertical bob — half of
+  // the "you never see the staff move" complaint. A real stride plus a shadow
+  // that slides under the figure reads as walking even at ~10 CSS px tall.
+  const stride = moving ? Math.sin(t * 11 + seedN) : 0;
+
   // contact shadow
-  ellipse(g, ix, iy, u * 1.05, u * 0.48);
+  ellipse(g, ix + stride * u * 0.17, iy, u * (1.05 - Math.abs(stride) * 0.07), u * 0.48);
   g.fillStyle = typeof sh === 'string' && sh ? sh : SHADOW_STRONG;
   g.fill();
 
   const inkCol = typeof ol === 'string' && ol ? ol : S.ink;
   const by = iy + bob;
-  const sq = moving ? 1 + Math.sin(t * 11 + seedN) * 0.05 : 1;
+  const sq = moving ? 1 + stride * 0.05 : 1;
 
   g.lineJoin = 'round';
   g.lineCap = 'round';
   g.lineWidth = LW_CHAR;
 
-  // legs
+  // legs — antiphase swing along the iso-x axis, with the forward leg lifting
+  // off the floor. At stride 0 this is exactly the old static pose.
   g.fillStyle = inkCol;
-  rr(g, ix - u * 0.42, by - u * 0.44, u * 0.32, u * 0.46, u * 0.15);
-  g.fill();
-  rr(g, ix + u * 0.1, by - u * 0.44, u * 0.32, u * 0.46, u * 0.15);
-  g.fill();
+  for (let li = 0; li < 2; li++) {
+    const ph = li === 0 ? stride : -stride;
+    const lx = ix + (li === 0 ? -u * 0.42 : u * 0.1) + ph * u * 0.24;
+    const lift = Math.max(0, ph) * u * 0.16;
+    rr(g, lx, by - u * 0.44 - lift, u * 0.32, u * 0.46 - lift * 0.45, u * 0.15);
+    g.fill();
+  }
 
-  // torso
-  const tw = u * 1.3 * sq;
-  rr(g, ix - tw / 2, by - u * 1.5, tw, u * 1.14, u * 0.42);
+  // torso — the silhouette carries class information: square shoulders for a
+  // uniform, a floor-length coat for VIPs/performers, the round blob for guests.
+  const shape = S.shape;
+  const tw = u * (shape === 'uniform' ? 1.42 : 1.3) * sq;
+  const th = shape === 'coat' ? u * 1.34 : u * 1.14;
+  const tr = shape === 'uniform' ? u * 0.14 : u * 0.42;
+  rr(g, ix - tw / 2, by - u * 1.5, tw, th, tr);
   g.fillStyle = S.body;
   g.fill();
   g.strokeStyle = inkCol;
   g.stroke();
+
+  // hi-vis chest band — the staff cue that survives greyscale
+  if (S.band) {
+    rr(g, ix - tw / 2, by - u * 1.14, tw, u * 0.26, u * 0.1);
+    g.fillStyle = S.band;
+    g.fill();
+  }
+
+  // carried prop (shopper tote)
+  if (S.prop === 'bag') {
+    rr(g, ix + u * 0.56, by - u * 1.0, u * 0.5, u * 0.62, u * 0.1);
+    g.fillStyle = shade(S.body, 0.28);
+    g.fill();
+    g.strokeStyle = inkCol;
+    g.stroke();
+  }
 
   // tie / lapel accent
   if (S.tie) {
@@ -1814,6 +1926,44 @@ function chibiFigure(g, ix, iy, u, S, bob, t, seedN, moving, sh, ol) {
     rr(g, ix - hr * 0.95, hy - u * 0.06, hr * 1.9, u * 0.3, u * 0.08);
     g.fillStyle = S.hat;
     g.fill();
+  } else if (ht === 'tophat') {
+    // VIP GUESTS wear this; the crown belongs to the live-event VIP alone.
+    rr(g, ix - hr * 1.3, hy - u * 0.34, hr * 2.6, u * 0.17, u * 0.07);
+    g.fillStyle = S.hat || '#1b1b28';
+    g.fill();
+    g.strokeStyle = ink(S.hat || '#1b1b28');
+    g.stroke();
+    rr(g, ix - hr * 0.64, hy - u * 0.98, hr * 1.28, u * 0.7, u * 0.06);
+    g.fill();
+    g.stroke();
+    rr(g, ix - hr * 0.64, hy - u * 0.52, hr * 1.28, u * 0.16, u * 0.04);
+    g.fillStyle = '#ffd400';
+    g.fill();
+  } else if (ht === 'beanie') {
+    g.beginPath();
+    g.arc(ix, hy - u * 0.06, hr * 1.0, Math.PI, TAU);
+    g.closePath();
+    g.fillStyle = S.hat || '#20242e';
+    g.fill();
+    rr(g, ix - hr * 1.0, hy - u * 0.16, hr * 2.0, u * 0.16, u * 0.07);
+    g.fill();
+  } else if (ht === 'mic') {
+    // Showroom performer: headset boom + mic ball, so the stage act is not
+    // another gold crown.
+    g.lineWidth = Math.max(LW_THIN, u * 0.1);
+    g.strokeStyle = '#22202c';
+    g.beginPath();
+    g.arc(ix, hy - u * 0.12, hr * 1.04, Math.PI * 1.08, TAU * 0.98);
+    g.stroke();
+    g.beginPath();
+    g.moveTo(ix + hr * 0.98, hy - u * 0.02);
+    g.lineTo(ix + hr * 0.5, hy + u * 0.34);
+    g.stroke();
+    g.beginPath();
+    g.arc(ix + hr * 0.44, hy + u * 0.38, u * 0.16, 0, TAU);
+    g.fillStyle = S.hat || '#ffd23f';
+    g.fill();
+    g.lineWidth = LW_CHAR;
   } else if (ht === 'crown') {
     g.beginPath();
     g.moveTo(ix - hr * 0.8, hy - hr * 0.72);
@@ -1856,6 +2006,138 @@ function byDepth(a, b) {
 }
 
 /* ------------------------------------------------------------------ *
+ *  Role markers (C4)
+ *
+ *  Everything here is CSS px in the SCREEN-SPACE overlay pass, never
+ *  world-scaled: the old chest badge was a 0.49 CSS px dot at the phone's fit
+ *  zoom, i.e. invisible exactly when identification matters most. A marker
+ *  drawn at a fixed screen size cannot vanish however far the player zooms out.
+ *  The glyphs are SHAPES first and colours second so they still separate in
+ *  greyscale and for colour-blind players.
+ * ------------------------------------------------------------------ */
+
+/** Base disc radius, CSS px. Never scales below this. */
+const PIP_R = 8;
+/** Gap in CSS px between the top of the head and the marker. */
+const PIP_LIFT = 9;
+/** Iso px from a figure's ground anchor to the top of its head, per unit. */
+const HEAD_UP = 2.9;
+/** How many upward hops (per lane, 3 lanes) an overlay may take before giving up.
+ *  One hop clears one blocker, so this bounds the tallest resolvable pile; 20
+ *  covers "the entire staff and every flagged guest standing on one tile", which
+ *  is the worst case a shift change can actually produce. */
+const STACK_TRIES = 20;
+/** Breathing gap left between two stacked overlays, CSS px. */
+const MARK_GAP = 2;
+/** Money-popup box height (CSS px) and how many hops it may take. */
+const POPUP_STEP = 17;
+const POPUP_TRIES = 20;
+/** Marker budgets. Staff are few and their identity is the point of the whole
+ *  system, so they get their own generous budget and are NEVER traded away for
+ *  guest markers; only the flagged-guest pass is density-capped. */
+/**
+ * Staff marker budget. Was 64, which is more staff than fit on a phone screen
+ * without the markers becoming the screen — measured on a Luxury Resort save,
+ * ~50 staff produced a solid mat of overlapping pills. 20 icon pips is still
+ * every dealer on a mid-game floor, and the placement pass keeps them from
+ * colliding.
+ */
+const WORKER_MARK_MAX = 20;
+/** Word-plates (as opposed to icon pips) allowed on screen at once. */
+const TEXT_PLATE_MAX = 6;
+/** ...and how many may carry the SAME message. Six "No table" plates restate
+ *  one fact six times; two is enough to read it as a pattern. */
+const TEXT_PLATE_PER_KEY_MAX = 2;
+/**
+ * Below this zoom a staff word-plate is suppressed unless its subject is in an
+ * actionable state. Roughly "the player has leaned in to inspect one area",
+ * where there is both room for words and a reason to want them.
+ */
+const ZOOM_FOR_TEXT = 1.9;
+const GUEST_MARK_MAX = 24;
+/**
+ * Angry guests get their OWN, much tighter cap.
+ *
+ * A VIP marker is per-subject information: that specific guest is worth money,
+ * and twenty of them in a packed VIP room is twenty useful facts. "Angry" is
+ * not like that — it is one systemic fact ("service is too slow") restated once
+ * per guest. On a busy floor the old shared cap of 24 put two dozen pulsing red
+ * pins over the casino, which read as an error state and buried the staff
+ * markers the player actually needs. A few is a signal; two dozen is noise.
+ */
+const ANGRY_MARK_MAX = 3;
+
+/** Role/kind -> { glyph, col } table. Colours match the uniforms. */
+const MARK = {
+  dealer: { glyph: 'diamond', col: '#ffffff', key: 'role.dealer.name' },
+  guard: { glyph: 'shield', col: '#ffd400', key: 'role.guard.name' },
+  cleaner: { glyph: 'broom', col: '#ff7a00', key: 'role.cleaner.name' },
+  vip: { glyph: 'star', col: '#ffd23f', key: 'role.vipGuest.name' },
+  angry: { glyph: 'bang', col: '#ff5a4a', key: 'state.guest.angry' }
+};
+
+/**
+ * Draw one role glyph centred at (cx, cy) inside radius r.
+ * Pure canvas path work — no state left behind except fill/stroke style.
+ */
+function pipGlyph(g, cx, cy, r, glyph, col) {
+  g.fillStyle = col;
+  g.strokeStyle = col;
+  if (glyph === 'diamond') {
+    g.beginPath();
+    g.moveTo(cx, cy - r);
+    g.lineTo(cx + r * 0.72, cy);
+    g.lineTo(cx, cy + r);
+    g.lineTo(cx - r * 0.72, cy);
+    g.closePath();
+    g.fill();
+  } else if (glyph === 'shield') {
+    g.beginPath();
+    g.moveTo(cx, cy - r);
+    g.lineTo(cx + r * 0.82, cy - r * 0.5);
+    g.lineTo(cx + r * 0.82, cy + r * 0.16);
+    g.quadraticCurveTo(cx + r * 0.6, cy + r, cx, cy + r);
+    g.quadraticCurveTo(cx - r * 0.6, cy + r, cx - r * 0.82, cy + r * 0.16);
+    g.lineTo(cx - r * 0.82, cy - r * 0.5);
+    g.closePath();
+    g.fill();
+  } else if (glyph === 'broom') {
+    g.lineWidth = Math.max(1.6, r * 0.3);
+    g.lineCap = 'round';
+    g.beginPath();
+    g.moveTo(cx + r * 0.62, cy - r * 0.86);
+    g.lineTo(cx - r * 0.14, cy + r * 0.12);
+    g.stroke();
+    g.beginPath();
+    g.moveTo(cx - r * 0.62, cy + r * 0.9);
+    g.lineTo(cx - r * 0.72, cy + r * 0.06);
+    g.lineTo(cx + r * 0.36, cy + r * 0.34);
+    g.lineTo(cx + r * 0.12, cy + r * 1.0);
+    g.closePath();
+    g.fill();
+  } else if (glyph === 'star') {
+    g.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI) / 5;
+      const rr2 = i % 2 === 0 ? r : r * 0.46;
+      const px = cx + Math.cos(a) * rr2;
+      const py = cy + Math.sin(a) * rr2;
+      if (i === 0) g.moveTo(px, py);
+      else g.lineTo(px, py);
+    }
+    g.closePath();
+    g.fill();
+  } else if (glyph === 'bang') {
+    const w = Math.max(1.8, r * 0.38);
+    rr(g, cx - w / 2, cy - r, w, r * 1.24, w * 0.5);
+    g.fill();
+    g.beginPath();
+    g.arc(cx, cy + r * 0.66, w * 0.62, 0, TAU);
+    g.fill();
+  }
+}
+
+/* ------------------------------------------------------------------ *
  *  Renderer
  * ------------------------------------------------------------------ */
 
@@ -1865,6 +2147,21 @@ const WALL_H = 48;
 /** How far below the fit-the-whole-floor zoom the player may pull back.
  *  Must be < 1 or minZoom collides with fitView() and zoom-out stops working. */
 const ZOOM_OUT_HEADROOM = 0.6;
+
+/** Breathing margin left around the diorama by the 'contain' framing. Cover
+ *  deliberately has none — a margin is backdrop, which is what it removes. */
+const FIT_MARGIN = 0.95;
+
+/**
+ * Normalise a framing mode. Accepts the two natural vocabularies (cover/fill,
+ * contain/fit/whole) because callers outside this file think in both.
+ * @returns {'cover'|'contain'}
+ */
+function normFrameMode(mode, fallback) {
+  if (mode === 'cover' || mode === 'fill') return 'cover';
+  if (mode === 'contain' || mode === 'fit' || mode === 'whole') return 'contain';
+  return fallback === 'contain' ? 'contain' : 'cover';
+}
 
 const BAKE_MAX_PIXELS = 8.4e6;
 const BAKE_COOLDOWN_MS = 220;
@@ -1886,6 +2183,25 @@ export class Renderer {
     this._bw = 0;
     this._bh = 0;
 
+    /* ---- Adaptive resolution -------------------------------------------
+     * Measured on a Pixel 10 Pro at Luxury Resort scale (~140 actors): the
+     * frame loop ran at 14 fps while JS sat 87% IDLE and ScriptDuration was
+     * 8% of wall. Nothing was CPU-bound — the cost is RASTERISATION of ~32k
+     * canvas path ops into an 822x1592 backing store (1.31 MP) every frame.
+     *
+     * Raster cost scales with pixel count, so the cheapest large lever is to
+     * render fewer pixels and let the compositor upscale. This tracks frame
+     * time and walks the render scale down when the game is missing frames,
+     * back up when it has headroom. The CSS size never changes, so layout,
+     * hit-testing and the camera contract are all untouched.
+     */
+    /** Multiplier on dpr for the backing store. 1 = full device resolution. */
+    this._renderScale = 1;
+    /** Smoothed frame time (ms), the signal the scaler reacts to. */
+    this._frameEma = 0;
+    /** Frames since the last scale change — hysteresis against oscillation. */
+    this._sinceScale = 0;
+
     /** Camera: ISO px -> CSS px is  css = iso * zoom + pan. */
     this.camera = { zoom: 1, panX: 0, panY: 0 };
     // Was a flat 0.45 — on a phone-sized viewport fitView() clamped to this
@@ -1900,6 +2216,41 @@ export class Renderer {
     // to fit the diorama's width when the viewport is narrower than that.
     this.minZoom = 0.9;
     this.maxZoom = 3.0;
+
+    /**
+     * CSS px of UI chrome floating OVER each canvas edge (C2). The canvas is
+     * full-viewport, so the HUD on top and the collapsed build drawer at the
+     * bottom hide part of it; framing against the raw canvas box put the casino
+     * behind them. All-zero is the default and reproduces the old behaviour
+     * exactly, so nothing regresses if main.js never calls setViewInsets().
+     */
+    this.viewInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+
+    /**
+     * Framing policy: 'cover' fills the visible rect and crops the rest,
+     * 'contain' shows the whole diorama and letterboxes. Cover is the default —
+     * see fitView() for why a phone must not letterbox an iso diamond.
+     */
+    this._frameMode = 'cover';
+
+    /** 'off' | 'roles' | 'all' — how much text identification to draw (C4). */
+    this.labelMode = 'roles';
+    /** Injected translator (C4); the renderer must not depend on locale files. */
+    this._tr = null;
+
+    /**
+     * Flat [x,y,w,h,...] of EVERY screen-space overlay box placed this frame —
+     * role markers (labelled or not), actor labels and money popups. It used to
+     * hold nameplates only, so a disc-only marker was free to land in the middle
+     * of somebody else's plate and "Guard" rendered as "G<star>rd". One shared
+     * occupancy list is the only way overlays can dodge each other.
+     */
+    this._markRects = [];
+
+    // True while the camera still sits exactly where fitView() put it (no user
+    // pan/zoom since). Only then may a late setViewInsets() re-frame the view —
+    // yanking a camera the player has aimed themselves would be hostile.
+    this._camClean = false;
 
     // world extents (world px)
     this.worldW = 960;
@@ -1958,14 +2309,63 @@ export class Renderer {
 
   /* ---------------- sizing ---------------- */
 
+  /**
+   * Walk the backing-store resolution toward whatever this device can actually
+   * rasterise at 60fps.
+   *
+   * Deliberately slow and hysteretic: a resize reallocates the backing store,
+   * so thrashing it would cost more than it saves. It needs ~1s of consistent
+   * evidence before each step, and it steps down faster than it steps back up
+   * (a stutter should be fixed promptly; a recovery can afford to be gradual).
+   *
+   * @param {number} dt seconds since the previous frame
+   */
+  _tuneRenderScale(dt) {
+    if (!(dt > 0)) return;
+    const ms = dt * 1000;
+    // Ignore the first frames and any single monster frame (a GC pause, a
+    // layout rebuild) — those are not a resolution problem.
+    if (ms > 90) return;
+    this._frameEma = this._frameEma ? this._frameEma * 0.85 + ms * 0.15 : ms;
+    this._sinceScale++;
+    // 30 frames is ~1.4s at the frame rates this actually fires at. Long enough
+    // to be evidence, short enough that a player on a weak device is not left
+    // at 14fps for ten seconds while the scaler creeps down one step at a time.
+    if (this._sinceScale < 30) return;
+
+    const cur = this._renderScale;
+    let next = cur;
+    // 20ms ~ under 50fps: give up pixels, in a big step — the measured cost is
+    // very close to linear in pixel count, so halving the step doubles the time
+    // spent stuttering for no benefit. 13ms ~ comfortably above 60fps: take
+    // some back, gently. The gap between the thresholds is the dead band.
+    // Floor 0.5: on this 2.6x-dpr phone that is still a 1.0x backing store
+    // (411x796), i.e. exactly what a non-retina display would show.
+    if (this._frameEma > 20 && cur > 0.5) next = Math.max(0.5, cur - 0.2);
+    else if (this._frameEma < 13 && cur < 1) next = Math.min(1, cur + 0.1);
+
+    if (next !== cur) {
+      this._renderScale = next;
+      this._sinceScale = 0;
+      // Re-baseline: the next frames are measuring a different resolution, and
+      // carrying the old average in would immediately trigger another step.
+      this._frameEma = 0;
+      this.resize();
+    }
+  }
+
   /** Re-measure the canvas and rebuild the backing store for the current DPR. */
   resize() {
     const c = this.canvas;
     if (!c) return;
 
     const dpr = clamp(
-      typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1,
-      1,
+      (typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1) *
+        (this._renderScale || 1),
+      // The floor is deliberately below 1: on a 2.6x-dpr phone even 0.75 is
+      // sharper than a 1x desktop display, and a playable 60fps beats a
+      // pin-sharp 14fps every time.
+      0.6,
       2
     );
 
@@ -2021,23 +2421,142 @@ export class Renderer {
    * viewports where a flat 0.9 floor would clamp the fit up and crop the
    * diorama. Never exceeds 0.9 so figures stay legible when the screen is
    * wide enough to not need to relax the floor.
+   *
+   * This is ALSO what keeps the whole-diorama view reachable now that the
+   * default framing is 'cover': minZoom is derived from the CONTAIN zoom and
+   * always lands strictly below it, so pinch-out / the "-" button can always
+   * pull back to the whole floor plan even though fitView() no longer starts
+   * there.
    */
   _updateMinZoom() {
     const b = this._isoB;
     const iw = Math.max(1, b.maxX - b.minX);
     const ih = Math.max(1, b.maxY - b.minY);
+    const v = this._viewRect();
 
-    // The zoom at which the whole diorama just fits the viewport. Height matters
-    // as much as width on a tall phone screen, so fit against both.
-    const fit = Math.min((this.cssW * 0.95) / iw, (this.cssH * 0.95) / ih);
+    // The zoom at which the whole diorama just fits the UNOBSTRUCTED viewport.
+    // Height matters as much as width on a tall phone screen, so fit against
+    // both. Using the inset rect here is what keeps zoom-out headroom alive once
+    // chrome covers part of the canvas (C2) — measuring against the raw canvas
+    // box would leave the floor "fitting" behind the HUD.
+    const fit = Math.min((v.w * FIT_MARGIN) / iw, (v.h * FIT_MARGIN) / ih);
 
     // minZoom must sit strictly BELOW the fit zoom. It used to be the width-fit
     // value itself, which meant fitView() landed the camera exactly on its own
     // floor: on a 411px phone both were 0.61, so the "-" button and pinch-out
     // were dead on arrival and the player could never pull back from the
     // default framing. Keep the 0.9 ceiling so figures stay legible on wide
-    // screens, and keep an absolute floor so a huge casino cannot zoom to dust.
-    this.minZoom = clamp(Math.min(fit * ZOOM_OUT_HEADROOM, 0.9), 0.18, 0.9);
+    // screens, and keep an absolute floor so a huge casino cannot zoom to dust —
+    // but never let that absolute floor rise ABOVE the contain zoom, or a very
+    // large casino would make the whole-diorama view unreachable.
+    this.minZoom = clamp(Math.min(fit * ZOOM_OUT_HEADROOM, 0.9), Math.min(0.18, fit), 0.9);
+  }
+
+  /**
+   * CONTRACT C2 — declare how much UI chrome floats over each canvas edge.
+   * fitView(), centerOn(), _clampPan() and _updateMinZoom() all frame against
+   * the resulting rectangle instead of the raw canvas box.
+   *
+   * Callers measure real boxes (getBoundingClientRect + env(safe-area-inset-*))
+   * and may fire this on every resize/drawer toggle, so an unchanged call must
+   * cost nothing: it returns false without touching the camera.
+   * @returns {boolean} true when the insets actually changed
+   */
+  setViewInsets({ top = 0, right = 0, bottom = 0, left = 0 } = {}) {
+    const px = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    };
+    const next = { top: px(top), right: px(right), bottom: px(bottom), left: px(left) };
+    const cur = this.viewInsets;
+    if (
+      cur.top === next.top &&
+      cur.right === next.right &&
+      cur.bottom === next.bottom &&
+      cur.left === next.left
+    ) {
+      return false;
+    }
+
+    this.viewInsets = next;
+    this._updateMinZoom();
+    // Re-frame only while the camera is untouched since the last fit; otherwise
+    // just re-clamp so the (possibly now smaller) legal envelope still holds.
+    if (this._camClean) this.fitView();
+    else this._clampPan();
+    return true;
+  }
+
+  /**
+   * The unobstructed part of the canvas in CSS px, i.e. the canvas box minus
+   * this.viewInsets. Clamped to a usable minimum so a bogus/oversized inset can
+   * never produce a zero or negative viewport (which would make the fit zoom
+   * explode). With the default all-zero insets this is exactly the canvas box.
+   * @returns {{x:number,y:number,w:number,h:number}}
+   */
+  _viewRect() {
+    const s = this.viewInsets || { top: 0, right: 0, bottom: 0, left: 0 };
+    const minW = Math.min(this.cssW, 80);
+    const minH = Math.min(this.cssH, 80);
+    let x = s.left;
+    let y = s.top;
+    let w = this.cssW - s.left - s.right;
+    let h = this.cssH - s.top - s.bottom;
+    if (!(w >= minW)) {
+      w = minW;
+      x = clamp(s.left, 0, Math.max(0, this.cssW - minW));
+    }
+    if (!(h >= minH)) {
+      h = minH;
+      y = clamp(s.top, 0, Math.max(0, this.cssH - minH));
+    }
+    return { x, y, w, h };
+  }
+
+  /* ---------------- identification (C4) ---------------- */
+
+  /**
+   * How much textual identification to draw over the floor (C4).
+   * 'off'   — shape/colour markers only.
+   * 'roles' — markers + a role nameplate on every staff member (default).
+   * 'all'   — the above plus nameplates on flagged guests (VIP / angry).
+   * Anything unrecognised falls back to the default rather than throwing.
+   * @param {string} mode
+   * @returns {string} the mode actually in effect
+   */
+  setLabelMode(mode) {
+    this.labelMode = mode === 'off' || mode === 'all' ? mode : 'roles';
+    return this.labelMode;
+  }
+
+  /**
+   * Inject the translator (C4). The renderer must not reach into locale files
+   * itself, and a caller may swap languages mid-session, so the function is
+   * stored rather than its results.
+   * @param {(key:string)=>string} fn
+   */
+  setTranslator(fn) {
+    this._tr = typeof fn === 'function' ? fn : null;
+  }
+
+  /**
+   * Translate a key through the injected translator, falling back to the bundled
+   * one and finally to the raw key — a missing string must never blank a label
+   * or throw inside the draw loop.
+   */
+  _t(key) {
+    const tr = this._tr;
+    if (tr) {
+      try {
+        const s = tr(key);
+        if (typeof s === 'string' && s) return s;
+      } catch (_e) { /* fall through to the bundled translator */ }
+    }
+    try {
+      const s = t(key);
+      if (typeof s === 'string' && s) return s;
+    } catch (_e) { /* fall through to the key */ }
+    return key;
   }
 
   /* ---------------- coordinate mapping (the contract) ---------------- */
@@ -2123,6 +2642,45 @@ export class Renderer {
     };
   }
 
+  /**
+   * The visible rect MINUS the chrome that covers it (contract C2), in iso px.
+   *
+   * The actor cull used the raw canvas box, but the HUD and the build sheet are
+   * both opaque and sit on top of it. With the sheet expanded in portrait only
+   * ~24% of the screen actually shows the casino, so roughly three quarters of
+   * the guests and staff were being drawn at full detail underneath furniture
+   * nobody can see through — and figures are 91% of all draw calls
+   * (_drawGuest 52% + _drawWorker 39%, measured).
+   *
+   * Culling against the inset rect is invisible by construction: the pixels it
+   * skips are painted over by an opaque element in the same frame. The chrome
+   * insets are re-measured every UI tick, so this follows the drawer up and
+   * down on its own.
+   */
+  _visibleIsoInset() {
+    const z = this.camera.zoom || 1;
+    const panX = this.camera.panX;
+    const panY = this.camera.panY;
+    const s = this.viewInsets || { top: 0, right: 0, bottom: 0, left: 0 };
+    // A little slack so a figure mid-stride never pops at the sheet's edge
+    // while the drawer is animating between its two positions.
+    const PAD = 24;
+    const l = Math.max(0, (Number(s.left) || 0) - PAD);
+    const r2 = Math.max(0, (Number(s.right) || 0) - PAD);
+    const t2 = Math.max(0, (Number(s.top) || 0) - PAD);
+    const b = Math.max(0, (Number(s.bottom) || 0) - PAD);
+    // Never let a bogus inset collapse the world to nothing.
+    const w = this.cssW - l - r2;
+    const h = this.cssH - t2 - b;
+    if (!(w > 40) || !(h > 40)) return this._visibleIso();
+    return {
+      minX: (l - panX) / z,
+      maxX: (this.cssW - r2 - panX) / z,
+      minY: (t2 - panY) / z,
+      maxY: (this.cssH - b - panY) / z
+    };
+  }
+
   /* ---------------- camera ---------------- */
 
   /** @returns {number} current zoom */
@@ -2162,6 +2720,7 @@ export class Renderer {
     // drifted when the cursor sat on the backdrop, and zooming out over the floor
     // could leave the camera outside the legal envelope so the next pan snapped.
     this._clampPan();
+    this._camClean = false;
     return z1;
   }
 
@@ -2179,57 +2738,128 @@ export class Renderer {
     if (Number.isFinite(dx)) this.camera.panX += dx;
     if (Number.isFinite(dy)) this.camera.panY += dy;
     this._clampPan();
+    if (Number.isFinite(dx) || Number.isFinite(dy)) this._camClean = false;
   }
 
-  /** Reset zoom + pan so the whole layout is framed with a margin. */
-  fitView() {
+  /**
+   * Reset zoom + pan so the layout is framed inside the INSET rectangle (C2),
+   * which is the part of the canvas the player can actually see. Insets are
+   * re-read here on every call, so a drawer that opened since the last fit is
+   * honoured without any extra plumbing.
+   *
+   * FRAMING POLICY — the default is 'cover' (fill the view, crop the rest), not
+   * 'contain' (show everything, letterbox the rest). The diorama's iso bounding
+   * box is ~1.66:1 landscape; a phone viewport is ~0.54:1 portrait. Containing
+   * one in the other is a 3x aspect mismatch, so on the 411x760 target device
+   * the casino occupied ~24% of the screen (~13.5% actual ink) and the rest was
+   * backdrop gradient — measured, and the loudest single part of "it looks bad
+   * on mobile". Covering fills the visible rect and lets the player pan, which
+   * is what every tycoon game on a phone does.
+   *
+   * On a wide screen the two are nearly identical (cover 1.88 vs contain 1.67 at
+   * 1600x900), so this only bites where it needs to.
+   *
+   * The whole-diorama view stays reachable two ways: fitView('contain'), and
+   * simply zooming out — _updateMinZoom() still derives minZoom from the
+   * contain zoom, so it always sits below it.
+   *
+   * @param {'cover'|'fill'|'contain'|'fit'|'whole'} [mode] omit to reuse the
+   *   current mode, which is what an inset change or world switch wants.
+   * @returns {number} the zoom actually applied
+   */
+  fitView(mode) {
+    const m = normFrameMode(mode, this._frameMode);
+    this._frameMode = m;
     const b = this._isoB;
     const iw = Math.max(1, b.maxX - b.minX);
     const ih = Math.max(1, b.maxY - b.minY);
-    const z = clamp(
-      Math.min((this.cssW * 0.95) / iw, (this.cssH * 0.95) / ih),
-      this.minZoom,
-      this.maxZoom
-    );
+    const v = this._viewRect();
+    // minZoom is derived from the same rect; recompute it first so a fit issued
+    // right after an inset change cannot clamp against a stale floor.
+    this._updateMinZoom();
+    const raw = m === 'cover'
+      ? Math.max(v.w / iw, v.h / ih)
+      : Math.min((v.w * FIT_MARGIN) / iw, (v.h * FIT_MARGIN) / ih);
+    const z = clamp(raw, this.minZoom, this.maxZoom);
     this.camera.zoom = z;
-    this.camera.panX = this.cssW / 2 - (b.minX + iw / 2) * z;
-    this.camera.panY = this.cssH / 2 - (b.minY + ih / 2) * z;
+    this.camera.panX = v.x + v.w / 2 - (b.minX + iw / 2) * z;
+    this.camera.panY = v.y + v.h / 2 - (b.minY + ih / 2) * z;
     this._clampPan();
+    this._camClean = true;
     return z;
+  }
+
+  /** @returns {'cover'|'contain'} the framing policy currently in effect */
+  getFrameMode() {
+    return this._frameMode;
+  }
+
+  /**
+   * Flip between the filled view and the whole-diorama view, and re-frame.
+   * This is what a "fit" button should call: one control, both framings, no
+   * extra state in the caller.
+   * @returns {'cover'|'contain'} the mode now in effect
+   */
+  toggleFrame() {
+    this.fitView(this._frameMode === 'cover' ? 'contain' : 'cover');
+    return this._frameMode;
   }
 
   /** Centre the view on a world-pixel point, keeping the current zoom. */
   centerOn(wx, wy) {
     const z = this.camera.zoom || 1;
     const p = worldToIso(wx, wy, 0);
-    this.camera.panX = this.cssW / 2 - p.x * z;
-    this.camera.panY = this.cssH / 2 - p.y * z;
+    const v = this._viewRect();
+    this.camera.panX = v.x + v.w / 2 - p.x * z;
+    this.camera.panY = v.y + v.h / 2 - p.y * z;
     this._clampPan();
+    this._camClean = false;
   }
 
   /**
-   * Keep at least ~40% of the smaller of (content, viewport) on screen on each
-   * axis, so the floor can never be dragged fully out of view.
+   * Keep the diorama inside the inset rectangle (C2) — content parked under the
+   * HUD or the build drawer is not reachable, so it must not count as visible.
+   *
+   * Two regimes, because one rule cannot serve both:
+   *
+   * - Content LARGER than the view on an axis (the normal case under the
+   *   'cover' framing): a hard map clamp — the content's own edge may not come
+   *   inside the view edge. Filling the screen is pointless if the very first
+   *   drag can slide 60% backdrop into it, which is what the old flat 40% rule
+   *   allowed.
+   * - Content SMALLER than the view (zoomed right out, or a tiny starter
+   *   casino): keep 40% of it on screen, so it can still be nudged around and
+   *   can never be flicked away entirely.
    */
   _clampPan() {
     const b = this._isoB;
     const z = this.camera.zoom || 1;
     const cw = (b.maxX - b.minX) * z;
     const ch = (b.maxY - b.minY) * z;
+    const v = this._viewRect();
 
-    const keepX = Math.min(cw, this.cssW) * 0.4;
-    const loX = keepX - b.maxX * z;
-    const hiX = this.cssW - keepX - b.minX * z;
-    this.camera.panX = loX > hiX
-      ? (this.cssW - cw) / 2 - b.minX * z
-      : clamp(this.camera.panX, loX, hiX);
+    if (cw >= v.w) {
+      // loX <= hiX is guaranteed by cw >= v.w, so no degenerate branch here.
+      this.camera.panX = clamp(this.camera.panX, v.x + v.w - b.maxX * z, v.x - b.minX * z);
+    } else {
+      const keepX = cw * 0.4;
+      const loX = v.x + keepX - b.maxX * z;
+      const hiX = v.x + v.w - keepX - b.minX * z;
+      this.camera.panX = loX > hiX
+        ? v.x + (v.w - cw) / 2 - b.minX * z
+        : clamp(this.camera.panX, loX, hiX);
+    }
 
-    const keepY = Math.min(ch, this.cssH) * 0.4;
-    const loY = keepY - b.maxY * z;
-    const hiY = this.cssH - keepY - b.minY * z;
-    this.camera.panY = loY > hiY
-      ? (this.cssH - ch) / 2 - b.minY * z
-      : clamp(this.camera.panY, loY, hiY);
+    if (ch >= v.h) {
+      this.camera.panY = clamp(this.camera.panY, v.y + v.h - b.maxY * z, v.y - b.minY * z);
+    } else {
+      const keepY = ch * 0.4;
+      const loY = v.y + keepY - b.maxY * z;
+      const hiY = v.y + v.h - keepY - b.minY * z;
+      this.camera.panY = loY > hiY
+        ? v.y + (v.h - ch) / 2 - b.minY * z
+        : clamp(this.camera.panY, loY, hiY);
+    }
   }
 
   /* ---------------- popups ---------------- */
@@ -2242,15 +2872,80 @@ export class Renderer {
   popup(x, y, text, color) {
     const list = this._popups;
     if (list.length >= RCFG.maxPopups) list.splice(0, list.length - RCFG.maxPopups + 1);
+    const wx = Number(x) || 0;
+    const wy = Number(y) || 0;
+    const str = String(text == null ? '' : text);
+    // Box width, estimated from the character count rather than measured: the
+    // draw context's font is not set outside the draw loop, and this has to be
+    // the SAME number the draw pass reserves with, or the occupancy decision
+    // made here would not match the box that actually lands on screen.
+    const bw = Math.max(20, str.length * 8.4 + 8);
     list.push({
-      x: Number(x) || 0,
-      y: Number(y) || 0,
-      text: String(text == null ? '' : text),
+      x: wx,
+      y: wy,
+      text: str,
+      bw,
       color: typeof color === 'string' && color ? color : '#9be27a',
       age: 0,
       life: RCFG.popupLife > 0 ? RCFG.popupLife : 1.1,
-      dx: (Math.random() - 0.5) * 8
+      dx: (Math.random() - 0.5) * 8,
+      // Anti-collision offset, resolved ONCE here rather than per frame. Two
+      // tables paying out on the same tick used to print their +$ on top of each
+      // other (and on top of a dealer's nameplate) as one unreadable smear.
+      // Re-resolving every frame instead would make a rising popup jitter as it
+      // slid past the boxes it was testing against, so it is baked in at spawn:
+      // the occupancy list still holds the previous frame's overlays, which is
+      // one frame stale and entirely good enough.
+      ...this._popupOffset(wx, wy, str)
     });
+  }
+
+  /**
+   * Pick a spawn offset (CSS px) that keeps a new popup clear of the overlays
+   * already on screen. Text width is estimated from the character count rather
+   * than measured: the draw context's font is not set outside the draw loop,
+   * and a few px of slack costs nothing for an occupancy test.
+   * @returns {{ox:number, oy:number}}
+   */
+  _popupOffset(wx, wy, text) {
+    const s = this.worldToScreen(wx, wy, 0);
+    const w = Math.max(20, text.length * 8.4 + 8);
+    const x0 = s.x - w / 2;
+    const y0 = s.y - 16 - POPUP_STEP / 2;
+    const slot = this._place(x0, y0, w, POPUP_STEP, MARK_GAP, POPUP_TRIES);
+    if (!slot) return { ox: 0, oy: 0 };
+
+
+    // BOUND THE DODGE.
+    //
+    // _place() will walk as far as it needs to find free space. On a busy floor
+    // (90 guests, every table paying at once) that turned the payouts into a
+    // ladder of "+9.28 / +9.10 / +9.14" marching up the right-hand edge of the
+    // screen, each number hovering over no venue in particular — observed on the
+    // device at Luxury Resort scale.
+    //
+    // A number that slightly overlaps its neighbour but sits over the table that
+    // earned it is more useful than a tidy column that has lost its referent, so
+    // past this radius we stop dodging and accept the overlap. The limits are
+    // sized to the legitimate case — four tables settling on one income tick,
+    // which needs three steps of stagger and may take a lane shift to get there.
+    const dy = slot.y - y0;
+    const dx = slot.x - x0;
+    if (Math.abs(dy) > POPUP_STEP * 12 || Math.abs(dx) > w * 2) return { ox: 0, oy: 0 };
+    // CLAIM the slot immediately. Everything that pays out on one sim tick —
+    // the income tick settling four tables at once is the normal case — spawns
+    // BEFORE the next frame resets the occupancy list. Testing without claiming
+    // meant all of them read an identical list, chose the identical slot and
+    // landed exactly on top of each other: the "+$ smear" this offset exists to
+    // prevent, still there, just one frame later. (The early-out on an empty
+    // list was part of the same bug — the first popup of a tick has to reserve
+    // too, or the second one has nothing to dodge.)
+    //
+    // Nothing is leaked if draw() stops running: _reserve() is capped, and once
+    // the list is full _place() simply fails and popups fall back to no offset,
+    // which is exactly the pre-fix behaviour.
+    this._reserve(slot.x, slot.y, w, POPUP_STEP);
+    return { ox: slot.x - x0, oy: slot.y - y0 };
   }
 
   /** Drop every live popup (used on world switch). */
@@ -2818,11 +3513,14 @@ export class Renderer {
     const g = this.ctx;
     if (!g) return;
 
-    // auto-resize if the CSS box or the device pixel ratio changed underneath us
+    // auto-resize if the CSS box or the device pixel ratio changed underneath us.
+    // curDpr must include _renderScale, or the adaptive scaler below would look
+    // like a dpr change to this check and re-resize the backing store every frame.
     const c = this.canvas;
     const curDpr = clamp(
-      typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1,
-      1,
+      (typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1) *
+        (this._renderScale || 1),
+      0.6,
       2
     );
     if (
@@ -2840,6 +3538,8 @@ export class Renderer {
     if (!Number.isFinite(dt) || dt < 0) dt = 0;
     if (dt > 0.1) dt = 0.1;
     this._last = now;
+
+    this._tuneRenderScale(dt);
     this.t += dt;
     const t = this.t;
 
@@ -2913,7 +3613,10 @@ export class Renderer {
     const zb = this._z;
     zb.length = 0;
 
-    const vis = this._visibleIso();
+    // Chrome-aware: see _visibleIsoInset(). Figures are 91% of all draw calls,
+    // so not drawing the ones hidden behind the HUD and the opaque build sheet
+    // is the single largest saving available without changing a single pixel.
+    const vis = this._visibleIsoInset();
     // Chibi figures top out around u=10.6 (VIP/actor): head + highlight ring
     // reach roughly 30-40 iso px up from the ground anchor, a patience bar a
     // little further; generous margins here just mean a few extra px of
@@ -2983,8 +3686,16 @@ export class Renderer {
 
     g.restore();
 
-    // 4. screen-space overlays: actor labels + money popups (never zoom-scaled)
+    // 4. screen-space overlays: role markers + actor labels + money popups
+    //    (never zoom-scaled — that is the whole point, see _drawRoleMarkers)
+    //
+    //    All three share one occupancy list, reset here rather than inside any
+    //    one of them: whoever draws first must not own a resource the other two
+    //    depend on. Order matters — markers claim their slots first (identity
+    //    beats decoration), then actor labels, then popups.
     g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this._markRects.length = 0;
+    this._drawRoleMarkers(g, guests, workers, t);
     this._drawActorLabels(g, actors);
     this._drawPopups(g, dt);
 
@@ -3013,7 +3724,7 @@ export class Renderer {
     g.textAlign = 'center';
     g.textBaseline = 'middle';
     g.direction = dir();
-    g.fillText(t('app.loading'), this.cssW / 2, this.cssH / 2);
+    g.fillText(this._t('app.loading'), this.cssW / 2, this.cssH / 2);
     g.direction = 'ltr';
     g.textAlign = 'start';
     g.textBaseline = 'alphabetic';
@@ -3148,6 +3859,22 @@ export class Renderer {
     }
     chibiFigure(g, ix, iy, u, S, bob, t, seedN, moving, P.shadow, P.outline);
 
+    // guests.js flips `angry` when patience runs out and the guest walks out on
+    // you — the single most expensive guest state, and the renderer never read
+    // the flag at all. Steam puffs (same idiom as the live-event angry actor)
+    // plus the screen-space '!' marker make a walkout visible before it happens.
+    if (o.angry === true) {
+      const by = iy + bob;
+      g.fillStyle = 'rgba(255,120,100,0.62)';
+      for (let i = 0; i < 2; i++) {
+        const px = ix + (i === 0 ? -u * 0.72 : u * 0.72);
+        const py = by - u * 2.85 - Math.abs(Math.sin(t * 4 + i + seedN)) * u * 0.35;
+        g.beginPath();
+        g.arc(px, py, u * 0.22, 0, TAU);
+        g.fill();
+      }
+    }
+
     // patience bar for anyone queueing or getting fed up
     const patience = Number(o.patience);
     const st = typeof o.state === 'string' ? o.state : '';
@@ -3181,9 +3908,51 @@ export class Renderer {
     const role = o.role === 'guard' ? 'guard' : o.role === 'cleaner' ? 'cleaner' : 'dealer';
     const S = ROLE_STYLE[role];
     const seedN = idSeed(o.id);
-    const moving = o.state === 'walking' || o.state === 'patrol' || o.state === 'responding';
+    const st = typeof o.state === 'string' ? o.state : '';
+    const moving = st === 'walking' || st === 'patrol' || st === 'responding';
+    const responding = st === 'responding';
     const u = U_WORKER;
     const bob = moving ? -Math.abs(Math.sin(t * 9 + seedN)) * u * 0.2 : Math.sin(t * 2.2 + seedN) * u * 0.04;
+    const pulse = 0.5 + 0.5 * Math.sin(t * (RCFG.highlightPulse || 2.2));
+
+    // Role-coloured floor tint. At the phone's fit zoom this disc is wider than
+    // the whole figure, so it is the first thing that reads as "staff, not
+    // guest" — the sprite itself is only ~11 CSS px tall there. A guard on its
+    // way to an incident gets the same pulsing red treatment live-event actors
+    // use, because "the guard is responding" was previously invisible: every
+    // staff state collapsed into one walk-bob boolean.
+    const mk = MARK[role];
+    isoDisc(g, ix, iy, u * (responding ? 1.7 + pulse * 0.3 : 1.45));
+    g.fillStyle = rgba(responding ? '#ff3b30' : mk.col, responding ? 0.2 + pulse * 0.2 : 0.15);
+    g.fill();
+    if (responding) {
+      g.lineWidth = 2 + pulse * 1.6;
+      g.strokeStyle = rgba('#ff3b30', 0.55 + pulse * 0.35);
+      g.stroke();
+    }
+
+    // Footstep puffs trailing the direction of travel — a second motion cue that
+    // survives when the figure is too small for the stride itself to register.
+    if (moving) {
+      const dxw = Number(o.tx) - (Number(o.x) || 0);
+      const dyw = Number(o.ty) - (Number(o.y) || 0);
+      if (Number.isFinite(dxw) && Number.isFinite(dyw)) {
+        let dix = LX(dxw, dyw);
+        let diy = LY(dxw, dyw, 0);
+        const len = Math.sqrt(dix * dix + diy * diy);
+        if (len > 0.001) {
+          dix /= len;
+          diy /= len;
+          for (let i = 0; i < 2; i++) {
+            const ph = ((t * 2.4 + seedN + i * 0.5) % 1 + 1) % 1;
+            const back = u * (0.35 + ph * 1.35);
+            ellipse(g, ix - dix * back, iy - diy * back, u * (0.2 + ph * 0.4), u * (0.1 + ph * 0.2));
+            g.fillStyle = rgba('#ffffff', 0.26 * (1 - ph));
+            g.fill();
+          }
+        }
+      }
+    }
 
     chibiFigure(g, ix, iy, u, S, bob, t, seedN, moving, P.shadow, P.outline);
 
@@ -3201,8 +3970,59 @@ export class Renderer {
       g.fill();
       g.strokeStyle = ink('#e6edf0');
       g.stroke();
+    } else if (role === 'dealer' && st === 'working') {
+      // A dealt card in hand: an unmanned table earns nothing, so "this dealer
+      // is actually running a table" has to be visible on the sprite, not only
+      // in the marker.
+      const by = iy + bob;
+      g.save();
+      g.translate(ix + u * 0.72, by - u * 1.05);
+      g.rotate(-0.3 + Math.sin(t * 3 + seedN) * 0.14);
+      rr(g, -u * 0.16, -u * 0.24, u * 0.32, u * 0.5, u * 0.06);
+      g.fillStyle = '#fbf7ec';
+      g.fill();
+      g.lineWidth = LW_THIN;
+      g.strokeStyle = '#2b2438';
+      g.stroke();
+      g.restore();
     }
+
+    this._roleEmblem(g, ix, iy + bob, u, mk);
     void P;
+  }
+
+  /**
+   * Small-size role cue painted ON the sprite (see ROLE_LOD_PX). Drawn in the
+   * world transform, so the size is divided by the camera zoom to hold a fixed
+   * MINIMUM on-screen size — the same trick the screen-space markers use, and
+   * the reason the old chest badge (a fixed 0.14u dot) was half a pixel at the
+   * phone's framing.
+   *
+   * Fades in over the last 45% of the threshold rather than switching, so a
+   * pinch does not pop the emblem on and off.
+   */
+  _roleEmblem(g, ix, by, u, mk) {
+    const zoom = this.camera.zoom || 1;
+    const perUnit = u * zoom;
+    if (perUnit >= ROLE_LOD_PX) return;
+    const lod = clamp((ROLE_LOD_PX - perUnit) / (ROLE_LOD_PX * 0.45), 0, 1);
+
+    // Iso radius that never renders smaller than ROLE_LOD_MIN CSS px.
+    const r = Math.max(u * 0.82, ROLE_LOD_MIN / zoom);
+    const cy = by - u * 1.05;
+
+    const a0 = g.globalAlpha;
+    g.globalAlpha = a0 * lod;
+    // Dark backing disc: the emblem has to separate from a navy uniform AND
+    // from a bright floor, and a halo does both without a second colour.
+    g.beginPath();
+    g.arc(ix, cy, r * 1.12, 0, TAU);
+    g.fillStyle = 'rgba(14,10,24,0.82)';
+    g.fill();
+    pipGlyph(g, ix, cy, r, mk.glyph, mk.col);
+    g.globalAlpha = a0;
+    g.lineWidth = LW_CHAR;
+    g.lineCap = 'round';
   }
 
   _drawActor(g, a, ix, iy, P, t) {
@@ -3301,12 +4121,419 @@ export class Renderer {
 
   /* ---------------- screen-space overlays ---------------- */
 
+  /**
+   * The highest (smallest y) TOP among every box already placed this frame that
+   * intersects [x, y, w, h]. Infinity means the slot is free.
+   *
+   * Returning the topmost blocker rather than a boolean is what lets _place()
+   * clear a whole stack in one hop instead of one rung at a time.
+   * @returns {number}
+   */
+  _blockTop(x, y, w, h) {
+    const r = this._markRects;
+    let top = Infinity;
+    for (let i = 0; i < r.length; i += 4) {
+      if (x < r[i] + r[i + 2] && x + w > r[i] && y < r[i + 1] + r[i + 3] && y + h > r[i + 1]) {
+        if (r[i + 1] < top) top = r[i + 1];
+      }
+    }
+    return top;
+  }
+
+  /**
+   * The lowest (largest y) BOTTOM among the boxes already placed this frame that
+   * intersect [x, y, w, h]. -Infinity means the slot is free.
+   *
+   * Mirror of _blockTop, for the downward half of _place()'s search.
+   * @returns {number}
+   */
+  _blockBottom(x, y, w, h) {
+    const r = this._markRects;
+    let bot = -Infinity;
+    for (let i = 0; i < r.length; i += 4) {
+      if (x < r[i] + r[i + 2] && x + w > r[i] && y < r[i + 1] + r[i + 3] && y + h > r[i + 1]) {
+        const b = r[i + 1] + r[i + 3];
+        if (b > bot) bot = b;
+      }
+    }
+    return bot;
+  }
+
+  /** Claim a box for the rest of the frame. Bounded so a 90-guest floor cannot
+   *  turn the overlap test into an O(n^2) frame killer. */
+  _reserve(x, y, w, h) {
+    const r = this._markRects;
+    if (r.length < 480) r.push(x, y, w, h);
+  }
+
+  /**
+   * Clamp an overlay box into the UNOBSTRUCTED rect (C2) rather than the raw
+   * canvas box.
+   *
+   * The canvas is full-bleed, so "inside the canvas" is not the same as
+   * "visible": the top 72 CSS px sit under the HUD and the bottom ~96 under the
+   * action dock. A marker whose preferred slot lands there is drawn and then
+   * covered, which is how staff at the BACK of the floor (small screen y, the
+   * marker sits ~64 px above the head) ended up with no visible pill at all
+   * while the rest of the shift had one. Cover framing made that worse, not
+   * better, because it zooms in and pushes more of the floor past the top edge.
+   *
+   * The hi bounds go through Math.max so a box wider/taller than the visible
+   * rect still produces a valid (top-left-pinned) position instead of NaN.
+   * @returns {{x:number, y:number}}
+   */
+  _clampBox(x, y, w, h) {
+    const v = this._viewRect();
+    const loX = v.x + 2;
+    const loY = v.y + 2;
+    return {
+      x: clamp(x, loX, Math.max(loX, v.x + v.w - w - 2)),
+      y: clamp(y, loY, Math.max(loY, v.y + v.h - h - 2))
+    };
+  }
+
+  /**
+   * Find a free slot for a w x h box whose preferred top-left is (x, y).
+   *
+   * The box is pushed UPWARD — the direction that keeps an overlay above its own
+   * subject rather than over somebody else's — by hopping it directly above
+   * whatever is blocking it. A fixed-pitch ladder does NOT work here and was
+   * tried first: staff (u 9.6), guests (8.0) and VIPs (10.6) sit at different
+   * heights above their anchor, so their ladders are out of phase and every rung
+   * of one lands straddling two boxes of another. Hopping above the blocker is
+   * phase-free and converges monotonically.
+   *
+   * Each lane is searched UP first, then DOWN, before moving to a left and then
+   * a right shoulder. The downward half is not optional: the ceiling is now the
+   * visible rect's top rather than the canvas top, and on a short landscape
+   * viewport (286 usable px) a dozen markers want the same band under the HUD —
+   * the upward ladder runs out after one rung and, without a downward search,
+   * every one of them falls back onto the others. Measured: 12 overlapping
+   * boxes at 915x412 with up-only, 0 with both.
+   *
+   * The preferred point is clamped through _clampBox() first, so every slot this
+   * can return — including the very first one, which is the common case — is
+   * somewhere the player can actually see.
+   * @returns {{x:number, y:number, moved:boolean}|null} null when nothing fits
+   */
+  _place(x, y, w, h, gap, tries) {
+    // A shoulder has to clear the whole box, not half of it: an offset smaller
+    // than w just lands the box on top of the lane it was trying to escape.
+    const side = w + gap;
+    const v = this._viewRect();
+    const loX = v.x + 2;
+    const hiX = Math.max(loX, v.x + v.w - w - 2);
+    // Ceiling and floor are the visible rect's edges, not the canvas's: climbing
+    // a stack up behind the HUD only trades an overlap for an invisible marker.
+    const ceil = v.y + 2;
+    const floor = Math.max(ceil, v.y + v.h - h - 2);
+    // Same clamp as _clampBox, inlined: this runs once per overlay per frame and
+    // the helper would re-measure the view rect and allocate a second object.
+    const sx = clamp(x, loX, hiX);
+    const sy = clamp(y, ceil, floor);
+    for (let s = 0; s < 3; s++) {
+      const xx = clamp(s === 0 ? sx : s === 1 ? sx - side : sx + side, loX, hiX);
+      // Up first — an overlay above its subject reads as belonging to it.
+      let yy = sy;
+      for (let i = 0; i < tries; i++) {
+        const blocked = this._blockTop(xx, yy, w, h);
+        if (blocked === Infinity) return { x: xx, y: yy, moved: i > 0 || s > 0 };
+        yy = blocked - h - gap;
+        if (yy < ceil) break;
+      }
+      // Then down. Anything found here has certainly moved (the up pass already
+      // rejected the preferred slot), so the caller draws its leader line.
+      yy = sy;
+      for (let i = 0; i < tries; i++) {
+        const blocked = this._blockBottom(xx, yy, w, h);
+        if (blocked === -Infinity) return { x: xx, y: yy, moved: true };
+        yy = blocked + gap;
+        if (yy > floor) break;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * CONTRACT C4 — screen-space role markers.
+   *
+   * Drawn in the overlay pass (identity transform), so their size is fixed in
+   * CSS px and independent of camera zoom: at the phone's ~0.5 fit zoom the
+   * world-space chest badge was half a pixel, which is why "many characters,
+   * you can't tell what they do" was the headline complaint. Marked subjects are
+   * every staff member plus the guests in a state that costs the player money
+   * (VIP, angry) — marking all ~90 guests would be noise, not information.
+   */
+  _drawRoleMarkers(g, guests, workers, tt) {
+    const zoom = this.camera.zoom || 1;
+    // Grow a little with zoom for looks, but never shrink below the base size.
+    const k = clamp(zoom, 0.95, 1.35);
+    const r = PIP_R * k;
+    const mode = this.labelMode;
+    const wantWorkerText = mode === 'roles' || mode === 'all';
+    const wantGuestText = mode === 'all';
+    const pulse = 0.5 + 0.5 * Math.sin(tt * 6);
+    // Density culling is ROLE-AWARE: staff run first, out of their own budget,
+    // so no amount of guest traffic can take a dealer's marker away. Only the
+    // flagged-guest pass is capped, and a crowded VIP room genuinely is better
+    // served by 24 markers than by 90.
+    let staff = 0;
+    let flagged = 0;
+
+    g.font = '800 ' + Math.round(11 * k) + 'px ' + FONT_STACK;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.direction = dir();
+
+    // PASS ORDER MATTERS, and TEXT IS RATIONED.
+    //
+    // Verified on the device at Luxury Resort scale: the floor carries ~50
+    // staff, and drawing a "Dealer"/"Guard"/"Cleaner" word-plate for each one
+    // covered the casino edge to edge — the diorama was completely invisible
+    // behind its own labels. The fix is not a smaller cap alone; it is asking
+    // what the plate is FOR. The sprite already carries role (uniform colour,
+    // role emblem, hi-vis band, silhouette), so a word-plate is only worth its
+    // real estate when it says something the sprite cannot:
+    //   - an ACTIONABLE state (a guard running to an incident, a dealer with
+    //     no table to run — both cost the player money right now), or
+    //   - the player has zoomed in far enough that there is room for words.
+    // Everyone else gets the compact icon pip, which is what actually answers
+    // "which one is the dealer?" at a glance.
+    //
+    // Actionable staff are drawn FIRST so that the budget can never be spent on
+    // twenty idle cleaners before reaching the guard who needs attention.
+    // The budget is also shared FAIRLY BETWEEN ROLES. Verified on the device:
+    // staffSim hands workers over grouped by role, so a single ordered sweep
+    // spent all 20 slots on dealers and the player saw twenty identical dealer
+    // diamonds and not one guard or cleaner — which defeats the entire point of
+    // the marker ("which one is the guard?"). So pass 1 gives each role an equal
+    // share, and pass 2 hands any unclaimed slots back to whoever is left.
+    const forceText = mode === 'all';
+    const roleShare = Math.max(1, Math.ceil(WORKER_MARK_MAX / 3));
+    const byRole = { dealer: 0, guard: 0, cleaner: 0 };
+    // Reused across frames: this runs every draw, so it must not allocate.
+    // Passes 1 and 2 both consider non-actionable workers, so without this a
+    // worker drawn in the fair-share pass would be drawn AGAIN in the fill pass
+    // and collide with its own reserved box.
+    const drawn = this._markDrawn || (this._markDrawn = new Set());
+    drawn.clear();
+    const keyPlates = this._markKeyPlates || (this._markKeyPlates = Object.create(null));
+    for (const kk in keyPlates) keyPlates[kk] = 0;
+    let plates = 0;
+    for (let pass = 0; pass < 3 && staff < WORKER_MARK_MAX; pass++) {
+      for (let i = 0; i < workers.length && staff < WORKER_MARK_MAX; i++) {
+        const o = workers[i];
+        if (!o || drawn.has(i)) continue;
+        const role = o.role === 'guard' ? 'guard' : o.role === 'cleaner' ? 'cleaner' : 'dealer';
+        const st = typeof o.state === 'string' ? o.state : '';
+        const alert = role === 'guard' && st === 'responding';
+        const idle = st === 'idle';
+        const actionable = alert || (role === 'dealer' && idle);
+        // pass 0 = actionable only; pass 1 = fair share per role; pass 2 = fill.
+        if (pass === 0 ? !actionable : actionable) continue;
+        if (pass === 1 && byRole[role] >= roleShare) continue;
+
+        const m = MARK[role];
+        // The label says the STATE when the state is the actionable thing.
+        let key = m.key;
+        if (alert) key = 'state.guard.responding';
+        else if (role === 'dealer' && idle) key = 'state.dealer.idle';
+        const status = alert
+          ? '#ff3b30'
+          : idle
+            ? '#6b7280'
+            : st === 'working'
+              ? '#5ce07a'
+              : null;
+
+        // Cap plates PER MESSAGE as well as in total. Six dealers with no table
+        // is one fact, not six — the same "say it once" rule that the angry
+        // guest markers needed. A responding guard alongside two idle dealers
+        // is informative; six copies of "No table" is just the wall of words
+        // again in a shorter font.
+        const perKey = keyPlates[key] || 0;
+        const wantText =
+          wantWorkerText &&
+          plates < TEXT_PLATE_MAX &&
+          (forceText || perKey < TEXT_PLATE_PER_KEY_MAX) &&
+          (actionable || forceText || zoom >= ZOOM_FOR_TEXT);
+
+        if (this._marker(g, o, U_WORKER, m, wantText ? this._t(key) : '', alert ? pulse : 0, status, r, k)) {
+          staff++;
+          byRole[role]++;
+          drawn.add(i);
+          if (wantText) {
+            plates++;
+            keyPlates[key] = (keyPlates[key] || 0) + 1;
+          }
+        }
+      }
+    }
+
+    // VIPs first, out of the shared budget: a VIP marker is per-subject
+    // information and must never be crowded out by a queue of angry guests.
+    for (let i = 0; i < guests.length && flagged < GUEST_MARK_MAX; i++) {
+      const o = guests[i];
+      if (!o || o.vip !== true) continue;
+      if (this._marker(g, o, U_VIP, MARK.vip, wantGuestText ? this._t(MARK.vip.key) : '', 0, null, r, k)) {
+        flagged++;
+      }
+    }
+
+    // Then a strictly limited number of angry guests, and without the pulsing
+    // alert ring: the ring is reserved for things the player can act on RIGHT
+    // NOW (a guard running to an incident). A walkout is a nudge to build more
+    // capacity, not an alarm, so it gets the pill and the existing steam puffs.
+    let angry = 0;
+    for (let i = 0; i < guests.length && angry < ANGRY_MARK_MAX && flagged < GUEST_MARK_MAX; i++) {
+      const o = guests[i];
+      if (!o || o.angry !== true || o.vip === true) continue;
+      if (this._marker(g, o, U_GUEST, MARK.angry, wantGuestText ? this._t(MARK.angry.key) : '', 0, null, r, k)) {
+        angry++;
+        flagged++;
+      }
+    }
+
+    g.direction = 'ltr';
+    g.textAlign = 'start';
+    g.textBaseline = 'alphabetic';
+  }
+
+  /**
+   * One marker: a dark pill with a shape glyph, an optional nameplate, an
+   * optional pulsing alert ring and an optional status dot, anchored above the
+   * subject's head. All sizes are CSS px.
+   *
+   * LAYOUT RULE — a marker never overlaps another overlay. Every marker,
+   * labelled or not, both tests and claims a box in this._markRects. The old
+   * code only did that for LABELLED markers, so a disc-only marker (a VIP star
+   * in 'roles' mode, anything at all in 'off' mode) was free to land in the
+   * middle of a nameplate: "Guard" rendered as "G<star>rd" on the device. When
+   * the preferred slot is taken the marker climbs (then descends, see _place);
+   * only if every lane is full does it drop the nameplate — the disc IS the
+   * identity, the plate is only its expansion, so the plate is what gets
+   * sacrificed.
+   *
+   * The whole search happens inside the UNOBSTRUCTED rect (C2). "Inside the
+   * canvas" is not good enough now that the canvas is full-bleed: a pill placed
+   * in the top 72 px is simply painted under the HUD, which is how staff at the
+   * back of the floor read as having no marker at all.
+   *
+   * @returns {boolean} false when the subject is off-screen and nothing was drawn
+   */
+  _marker(g, o, u, m, label, alertPulse, statusCol, r, k) {
+    const p = this.worldToScreen(Number(o.x) || 0, Number(o.y) || 0, 0);
+    // Visibility is judged against the UNOBSTRUCTED rect (C2), not the canvas
+    // box: a figure whose anchor is 60 px above the visible rect is behind the
+    // HUD, so a marker for it is pure clutter. The margins are asymmetric
+    // because a chibi is drawn UPWARD from its ground anchor — an anchor just
+    // past the bottom edge still has a head on screen.
+    const v = this._viewRect();
+    if (p.x < v.x - 70 || p.x > v.x + v.w + 70) return false;
+    if (p.y < v.y - 30 || p.y > v.y + v.h + 45) return false;
+
+    const h = r * 2 + 3;
+    const pad = 5 * k;
+    let tw = label ? g.measureText(label).width : 0;
+    let w = label ? h + pad + tw + pad : h;
+    // Head anchor: where the tail wants to point, and the bottom of the column
+    // of candidate slots.
+    const headY = p.y - u * HEAD_UP * (this.camera.zoom || 1) - PIP_LIFT * k;
+    // Keep the whole pill inside the VISIBLE rect: a marker for someone near an
+    // edge used to be printed half off-screen (or, at the back of the floor,
+    // entirely behind the HUD), which is the one place identification matters
+    // most — that is where guests enter and staff congregate.
+    const wantY = headY - h;
+    let want = this._clampBox(p.x - w / 2, wantY, w, h);
+
+    let slot = this._place(want.x, want.y, w, h, MARK_GAP, STACK_TRIES);
+    if (!slot && label) {
+      // Nothing fits at nameplate width. Shed the plate and try again as a disc,
+      // which is a third of the width and almost always finds a home.
+      label = '';
+      tw = 0;
+      w = h;
+      want = this._clampBox(p.x - w / 2, wantY, w, h);
+      slot = this._place(want.x, want.y, w, h, MARK_GAP, STACK_TRIES);
+    }
+    // Last resort: draw where it wanted to go anyway. A pile-up this deep is
+    // pathological, and an overlapping disc still says "there is a guard here" —
+    // a missing one says nothing at all, which is strictly worse.
+    const x0 = slot ? slot.x : want.x;
+    const top = slot ? slot.y : want.y;
+    // "Detached" means the pill is no longer sitting directly over the head —
+    // because it dodged a neighbour, or because it was clamped down out of the
+    // HUD. Both need the leader line; only the vertical offset matters, since a
+    // purely horizontal edge clamp still reads as attached via the tail.
+    const stacked = (slot ? slot.moved : false) || Math.abs(top - wantY) > 0.5;
+    this._reserve(x0, top, w, h);
+    const cy = top + h / 2;
+    const gx = x0 + h / 2;
+
+    if (stacked) {
+      // The marker had to move to dodge somebody. A leader line back to the head
+      // is what keeps it unambiguously THIS figure's marker rather than a label
+      // for whatever it now floats above — the short tail cannot span the gap.
+      g.beginPath();
+      g.moveTo(x0 + w / 2, cy + h / 2);
+      g.lineTo(p.x, headY);
+      g.lineWidth = 1.4;
+      g.strokeStyle = 'rgba(14,10,24,0.72)';
+      g.stroke();
+    } else {
+      // Tail first, so the pill covers its base. Kept inside the (possibly
+      // edge-clamped) pill so it always reads as attached to it.
+      const tx = clamp(p.x, x0 + 6 * k, x0 + w - 6 * k);
+      g.beginPath();
+      g.moveTo(tx - 3.4 * k, cy + h / 2 - 1);
+      g.lineTo(tx + 3.4 * k, cy + h / 2 - 1);
+      g.lineTo(tx, cy + h / 2 + 5 * k);
+      g.closePath();
+      g.fillStyle = 'rgba(14,10,24,0.88)';
+      g.fill();
+    }
+
+    if (alertPulse > 0) {
+      g.beginPath();
+      g.arc(gx, cy, h / 2 + 2 + alertPulse * 3, 0, TAU);
+      g.lineWidth = 2 + alertPulse * 1.6;
+      g.strokeStyle = rgba('#ff3b30', 0.45 + alertPulse * 0.45);
+      g.stroke();
+    }
+
+    rr(g, x0, cy - h / 2, w, h, h / 2);
+    g.fillStyle = 'rgba(14,10,24,0.88)';
+    g.fill();
+    g.lineWidth = 1.6 * k;
+    g.strokeStyle = m.col;
+    g.stroke();
+
+    pipGlyph(g, gx, cy, r * 0.72, m.glyph, m.col);
+
+    if (statusCol) {
+      g.beginPath();
+      g.arc(x0 + h - r * 0.3, cy - r * 0.72, Math.max(2.2, r * 0.34), 0, TAU);
+      g.fillStyle = statusCol;
+      g.fill();
+      g.lineWidth = 1.2;
+      g.strokeStyle = 'rgba(14,10,24,0.95)';
+      g.stroke();
+    }
+
+    if (label) {
+      g.fillStyle = '#ffffff';
+      g.fillText(label, x0 + h + pad + tw / 2, cy + 0.5);
+    }
+    return true;
+  }
+
   _drawActorLabels(g, actors) {
     if (actors.length === 0) return;
     g.font = '800 12px ' + FONT_STACK;
     g.textAlign = 'center';
     g.textBaseline = 'middle';
     g.direction = dir();
+    const v = this._viewRect();
     for (let i = 0; i < actors.length; i++) {
       const a = actors[i];
       if (!a) continue;
@@ -3319,28 +4546,41 @@ export class Renderer {
         (typeof a.labelKey === 'string' && a.labelKey) ||
         (def && typeof def.labelKey === 'string' && def.labelKey) ||
         '';
+      // C4: through the INJECTED translator, like every other string the
+      // renderer draws. Calling the bundled t() directly meant a host that swaps
+      // in its own translator (or a language switched after boot) updated every
+      // role nameplate but left "Thief!" in the old language.
       const label = labelKey
-        ? t(labelKey)
+        ? this._t(labelKey)
         : typeof a.label === 'string' && a.label
           ? a.label
           : '';
       if (!label) continue;
       const col = def && def.color ? def.color : '#e67e22';
       const p = this.worldToScreen(Number(a.x) || 0, Number(a.y) || 0, 0);
-      if (p.x < -80 || p.y < -60 || p.x > this.cssW + 80 || p.y > this.cssH + 60) continue;
+      if (p.x < v.x - 80 || p.x > v.x + v.w + 80) continue;
+      if (p.y < v.y - 30 || p.y > v.y + v.h + 45) continue;
       const tw = g.measureText(label).width;
       const pw = tw + 14;
       const ph = 18;
-      const px = p.x - pw / 2;
-      const py = p.y - 34 * (this.camera.zoom || 1) - ph;
-      rr(g, px, py, pw, ph, 7);
+      // Share the role markers' occupancy list (they ran first, this frame), so
+      // a "Thief!" plate can no longer be stamped through a guard's nameplate,
+      // and clamp into the visible rect for the same reason markers do.
+      const want = this._clampBox(p.x - pw / 2, p.y - 34 * (this.camera.zoom || 1) - ph, pw, ph);
+      const slot = this._place(want.x, want.y, pw, ph, MARK_GAP, STACK_TRIES);
+      const bx = slot ? slot.x : want.x;
+      const py = slot ? slot.y : want.y;
+      this._reserve(bx, py, pw, ph);
+      rr(g, bx, py, pw, ph, 7);
       g.fillStyle = 'rgba(22,14,36,0.88)';
       g.fill();
       g.lineWidth = 1.6;
       g.strokeStyle = col;
       g.stroke();
       g.fillStyle = '#ffffff';
-      g.fillText(label, p.x, py + ph / 2 + 0.5);
+      // Centre on the box, not on the actor: the box may have been nudged onto a
+      // shoulder to dodge a marker, and the text has to travel with it.
+      g.fillText(label, bx + pw / 2, py + ph / 2 + 0.5);
     }
     g.direction = 'ltr';
     g.textAlign = 'start';
@@ -3365,8 +4605,13 @@ export class Renderer {
       const k = p.age / p.life;
       const alpha = k < 0.15 ? k / 0.15 : 1 - (k - 0.15) / 0.85;
       const s = this.worldToScreen(p.x, p.y, 0);
-      const x = s.x + p.dx * k;
-      const y = s.y - k * RCFG.popupRise - 16;
+      // p.ox / p.oy are the spawn-time anti-collision offset (see popup());
+      // constants for the life of the popup, so the rise stays perfectly smooth.
+      const x = s.x + p.dx * k + (Number(p.ox) || 0);
+      const y = s.y - k * RCFG.popupRise - 16 + (Number(p.oy) || 0);
+      // Claim the box so the NEXT popup (and this one, next frame) dodges it.
+      const tw = g.measureText(p.text).width;
+      this._reserve(x - tw / 2 - 3, y - POPUP_STEP / 2, tw + 6, POPUP_STEP);
       g.globalAlpha = clamp(alpha, 0, 1);
       g.lineWidth = 3.5;
       g.lineJoin = 'round';
@@ -3386,7 +4631,9 @@ const _vipStyleCache = new Map();
 function _vipStyleFor(color) {
   let s = _vipStyleCache.get(color);
   if (!s) {
-    s = styleOf(mix(color, CONFIG.guest.vipColor || '#ffd76a', 0.55), '#ffcf9e', '#22202c', '#ffd23f', 'crown', '#ffd23f', '#ffffff');
+    // Top hat + long coat, NOT the crown — the crown now identifies the
+    // live-event VIP only (three actor kinds used to share it).
+    s = styleOf(mix(color, CONFIG.guest.vipColor || '#ffd76a', 0.55), '#ffcf9e', '#22202c', '#1b1b28', 'tophat', '#ffd23f', '#ffffff', null, 'coat');
     if (_vipStyleCache.size < 64) _vipStyleCache.set(color, s);
   }
   return s;

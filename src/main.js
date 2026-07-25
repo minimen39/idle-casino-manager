@@ -9,12 +9,17 @@
  *   2. Build the floor plan and construct the three sims for the active branch.
  *   3. Mount every UI module into its DOM host and provide the buttons that
  *      open the modals the UI modules expose (world map, mini-games, shop, ad).
- *   4. Run the rAF loop: dt clamped to CONFIG.loop.maxDt, sims tick, renderer
- *      draws, a 1s income tick pays every unlocked branch, autosave every 10s.
+ *   4. Run the rAF loop: the SIM step gets a dt clamped to CONFIG.loop.maxDt,
+ *      while income / autosave / UI timers run off the real elapsed time, so a
+ *      phone that drops frames still earns exactly what the HUD advertises.
  *   5. Route canvas pointer input: screen -> world -> live events -> guests,
  *      and drive the renderer camera (wheel zoom, drag pan, pinch, keyboard).
  *   6. Invalidate the layout on 'purchase' and fully rebuild the sims on
  *      'world:switched' / 'world:unlocked'.
+ *   7. Own the two things only the shell can own: the camera's view insets
+ *      (contract C2 — how much chrome floats over the full-viewport canvas) and
+ *      the Android hardware Back button (a Back press closes the top modal
+ *      instead of leaving the installed PWA).
  *
  * Camera contract used here (renderer.js owns the implementation):
  *   renderer.screenToWorld(cssX, cssY) -> world px   (canvas-relative CSS px in)
@@ -164,6 +169,15 @@ const TUNING = {
   wakeLockMaxFailures: 3
 };
 
+/**
+ * Sanity bound on the REAL elapsed time a single frame may credit, seconds.
+ * The wall-clock accumulators (income / autosave / UI) run off unclamped time
+ * so a slow phone earns what the HUD advertises — see frame(). Time spent
+ * backgrounded never gets here (startLoop resets the clock and grantOffline
+ * pays that), so this only bounds a stall the loop lived through.
+ */
+const RAW_DT_CAP = 5;
+
 /* ------------------------------------------------------------------ *
  *  Module-level runtime handles
  * ------------------------------------------------------------------ */
@@ -210,6 +224,9 @@ let lastPortrait = null;
 
 /** @type {HTMLButtonElement|null} The rewarded-ad action-bar button, kept so its cooldown state can be refreshed. */
 let adActionBtn = null;
+
+/** @type {HTMLButtonElement|null} The '?' help button, kept so it can be retired if the guide module is absent. */
+let helpActionBtn = null;
 
 /**
  * Every action-bar button with the locale keys it was built from, so a language
@@ -482,24 +499,46 @@ function clickSlopFor(pointerType) {
   return pointerType === 'touch' ? CAM.clickMaxDistTouch : CAM.clickMaxDist;
 }
 
-/** Live pointers on the canvas: pointerId -> {x, y} in canvas CSS px. */
+/** Live pointers on the canvas: pointerId -> {x, y, t} in canvas CSS px + ms. */
 const pointers = new Map();
 
 /**
+ * A contact the browser never closes out — the system UI steals it (notification
+ * shade, split-screen handle, an incoming call), or the page is backgrounded
+ * mid-gesture — would otherwise sit in `pointers` forever. Two live entries is
+ * all it takes to wedge every later touch into a phantom pinch, permanently.
+ * Anything not updated for this long is treated as leaked.
+ */
+const POINTER_STALE_MS = 10000;
+
+/**
  * The current single-pointer gesture, or null.
+ * `panning` is the touch-slop latch: false until the contact has travelled far
+ * enough to be a drag rather than a tap, and one-way thereafter for the life of
+ * the gesture (so a pan that comes back to rest does not re-arm the gate).
  * @type {{id:number, startX:number, startY:number, lastX:number, lastY:number,
- *         maxDist:number, canClick:boolean}|null}
+ *         maxDist:number, slop:number, canClick:boolean, panning:boolean}|null}
  */
 let gesture = null;
 
 /**
- * The current two-pointer pinch, or null.
- * @type {{startDist:number, startZoom:number, midX:number, midY:number}|null}
+ * The current two-pointer pinch, or null. `ids` pins the pinch to the exact two
+ * contacts it was baselined on: with a third contact down (a thumb or a palm
+ * grazing the glass) the *set* of pointers can change without its size
+ * dropping below 2, and a pinch measured against a different finger pair than
+ * it started on jumps the camera by the whole difference in one frame.
+ * @type {{ids:number[], startDist:number, startZoom:number, midX:number, midY:number}|null}
  */
 let pinch = null;
 
 /** Set when the camera should be re-framed after the next draw (layout known then). */
 let fitPending = false;
+
+/**
+ * Frames that must be drawn even while a modal is up, so a pending re-frame can
+ * still be measured and shown. Counted down in frame(); see requestFitView().
+ */
+let renderWarmup = 0;
 
 /**
  * True once the player has zoomed or panned by hand. A layout rebuild (a
@@ -516,6 +555,13 @@ let cameraTouched = false;
 function requestFitView(force) {
   if (!force && cameraTouched) return;
   fitPending = true;
+  // Framing costs TWO frames: fitView() measures against the frame the renderer
+  // just drew, and the result is only visible on the frame after that. Those
+  // two must happen even behind a modal (gap G3's render pause) — the offline
+  // report opens during boot, before the world has ever been framed, and
+  // pausing there would leave a blank canvas under its blur instead of the
+  // casino. See the render block in frame().
+  renderWarmup = 2;
 }
 
 /**
@@ -553,6 +599,10 @@ function syncCameraZoom() {
 function applyPendingFit() {
   if (!fitPending) return;
   fitPending = false;
+  // fitView() frames against the inset rectangle (C2), so the insets must be
+  // current BEFORE it runs — otherwise the first frame after a boot / rotation
+  // is framed behind the HUD and only corrected on the next re-fit.
+  applyViewInsets();
   if (renderer && typeof renderer.fitView === 'function') {
     safe(() => renderer.fitView(), 'renderer.fitView');
     cameraTouched = false;
@@ -612,6 +662,343 @@ function cameraCommand(dir) {
   else cameraZoomBy(CAM.stepFactor);
 }
 
+/* ---------------- camera view insets (contract C2) ---------------- *
+ *
+ *  The canvas is full-viewport, so the HUD (top) and the collapsed build
+ *  drawer (bottom sheet) FLOAT OVER it. Left to itself fitView() would frame
+ *  the diorama into the raw canvas box and park a third of the casino behind
+ *  opaque chrome. renderer.setViewInsets({top,right,bottom,left}) tells the
+ *  camera how much of each edge is covered; it frames — and recomputes
+ *  minZoom — against the unobstructed rectangle instead.
+ *
+ *  Everything here is MEASURED. Not one pixel constant: the HUD's height is
+ *  60px + safe-top, the drawer strip depends on the handle + header font
+ *  metrics, and both change with the language (Hebrew wraps differently), the
+ *  breakpoint and the device's notch. A hardcoded number would be wrong on the
+ *  first phone that isn't this one.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Chrome that overlays the canvas. `#hud` is the opaque top bar; `#actions` is
+ * the action dock pinned beneath it; `.build-panel` is the drawer, which is a
+ * bottom sheet on phones and a side column on wide screens — which edge each one
+ * occupies is derived from its geometry below, never assumed.
+ *
+ * `#actions` earns its place because the dock's pills are opaque and 44px tall:
+ * without it the camera happily frames the top of the floor plan underneath
+ * them. Its own box is transparent (contract C1) but it is the only stable
+ * handle on the row's extent, and the row is solid enough across its width that
+ * treating the whole strip as chrome is right.
+ */
+const INSET_SELECTORS = ['#hud', '#actions', '.build-panel'];
+
+/** No single edge may eat more than this fraction of the canvas. */
+const INSET_MAX_FRACTION = 0.4;
+
+/** Last insets pushed to the renderer, so an unchanged measurement is free. */
+let lastViewInsets = null;
+/**
+ * The collapsed sheet's intrusion from the canvas BOTTOM EDGE, as
+ * edgeIntrusion() reports it — i.e. the strip height PLUS the safe-area gap the
+ * sheet is translated up by. Only ever written from a real measurement taken
+ * while the drawer was collapsed, so it is ground truth and directly comparable
+ * with `hit.amount`. Cleared on a viewport change (rotation retunes the strip).
+ */
+let collapsedDrawerPx = 0;
+/**
+ * Fallback strip height for the window in which we have never SEEN the drawer
+ * collapsed. This is a drawer-local height (the `--drawer-collapsed-h` token /
+ * contract C3's `collapsedHeight` payload) and therefore excludes the safe-area
+ * gap — collapsedDrawerIntrusion() adds it back before comparing.
+ */
+let collapsedDrawerHintPx = 0;
+/** Hidden probe element used to read env(safe-area-inset-*) as real pixels. */
+let safeAreaProbe = null;
+
+function pxOf(value) {
+  const n = parseFloat(value);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * env(safe-area-inset-*) in CSS px.
+ *
+ * Read off a hidden probe's resolved padding rather than
+ * getComputedStyle(:root).getPropertyValue('--safe-top'): a custom property's
+ * computed value is a token stream, so browsers are free to hand back the
+ * literal 'env(safe-area-inset-top, 0px)' text. Padding always resolves to px.
+ */
+function safeAreaInsets() {
+  const zero = { top: 0, right: 0, bottom: 0, left: 0 };
+  if (typeof document === 'undefined' || !document.body || typeof window === 'undefined') return zero;
+  return (
+    safe(() => {
+      if (!safeAreaProbe || !safeAreaProbe.isConnected) {
+        const node = document.createElement('div');
+        node.setAttribute('aria-hidden', 'true');
+        node.style.cssText =
+          'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none;' +
+          'padding:env(safe-area-inset-top) env(safe-area-inset-right) ' +
+          'env(safe-area-inset-bottom) env(safe-area-inset-left);';
+        document.body.appendChild(node);
+        safeAreaProbe = node;
+      }
+      const cs = window.getComputedStyle(safeAreaProbe);
+      return {
+        top: pxOf(cs.paddingTop),
+        right: pxOf(cs.paddingRight),
+        bottom: pxOf(cs.paddingBottom),
+        left: pxOf(cs.paddingLeft)
+      };
+    }, 'safeAreaInsets') || zero
+  );
+}
+
+/**
+ * Which canvas edge an overlay hugs, and how far it intrudes from it.
+ *
+ * This used to just take the smallest of the four intrusions, on the reasoning
+ * that a full-width top bar intrudes 60px from the top but the whole height
+ * from the bottom. That is only true while the overlay is SHORT. The expanded
+ * build sheet is 411x471 on a 411x760 canvas, which makes the candidates
+ * top=760, bottom=471, left=411, right=411 — so "smallest" picked 'left' and
+ * the camera framed the entire casino off the side of the screen.
+ *
+ * Span beats distance. An overlay that reaches both vertical edges is a
+ * horizontal band and can only be chrome on the top or the bottom, whatever the
+ * arithmetic says; the mirror case holds for a vertical band. Only when an
+ * overlay spans neither axis (a floating widget like the zoom cluster) does the
+ * nearest-edge fallback apply.
+ * @returns {{edge:string, amount:number}|null}
+ */
+function edgeIntrusion(rect, box) {
+  if (!rect || !(rect.width > 0) || !(rect.height > 0)) return null;
+  // No overlap with the canvas at all (off-screen / collapsed away).
+  if (rect.bottom <= box.top || rect.top >= box.bottom) return null;
+  if (rect.right <= box.left || rect.left >= box.right) return null;
+
+  // Overlays are inset from the edge by a margin/safe-area, so "reaches the
+  // edge" needs slack. 2% of the short side is ~8px on a phone, which clears
+  // the --spacing-* margins the action dock and the sheet actually use.
+  const eps = Math.max(2, Math.min(box.width, box.height) * 0.02);
+  const spansX = rect.left <= box.left + eps && rect.right >= box.right - eps;
+  const spansY = rect.top <= box.top + eps && rect.bottom >= box.bottom - eps;
+
+  // A band that spans BOTH axes covers the canvas (a full-screen modal
+  // backdrop). It is not edge chrome and must not move the camera at all.
+  if (spansX && spansY) return null;
+
+  const fromTop = rect.bottom - box.top;
+  const fromBottom = box.bottom - rect.top;
+  const fromLeft = rect.right - box.left;
+  const fromRight = box.right - rect.left;
+
+  if (spansX) {
+    // Horizontal band: whichever horizontal edge it sits nearer to.
+    return rect.top - box.top <= box.bottom - rect.bottom
+      ? { edge: 'top', amount: fromTop }
+      : { edge: 'bottom', amount: fromBottom };
+  }
+  if (spansY) {
+    return rect.left - box.left <= box.right - rect.right
+      ? { edge: 'left', amount: fromLeft }
+      : { edge: 'right', amount: fromRight };
+  }
+
+  // Floating widget: nearest edge by smallest intrusion, as before.
+  const candidates = [
+    { edge: 'top', amount: fromTop },
+    { edge: 'bottom', amount: fromBottom },
+    { edge: 'left', amount: fromLeft },
+    { edge: 'right', amount: fromRight }
+  ];
+  let best = null;
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    if (!(c.amount > 0)) continue;
+    if (!best || c.amount < best.amount) best = c;
+  }
+  return best;
+}
+
+/**
+ * The `--drawer-collapsed-h` token, in px, or 0.
+ *
+ * styles.css owns this number (78px, retuned in the short-landscape block) and
+ * panels.js already reads the same token, so this is not a duplicated constant —
+ * it is the same single source, read from the DOM. Only a plain px literal is
+ * accepted: a calc() resolves to unparseable token text on a custom property.
+ */
+function cssDrawerCollapsedPx(node) {
+  if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') return 0;
+  return (
+    safe(() => {
+      const raw = String(window.getComputedStyle(node).getPropertyValue('--drawer-collapsed-h') || '').trim();
+      if (!/^\d+(\.\d+)?px$/.test(raw)) return 0;
+      const px = parseFloat(raw);
+      return Number.isFinite(px) && px > 0 ? px : 0;
+    }, 'cssDrawerCollapsedPx') || 0
+  );
+}
+
+/**
+ * How much larger than the PREDICTED collapsed strip a measurement may be and
+ * still be believed to have been taken with the sheet at rest.
+ *
+ * The two cases this has to separate are not close: a settled strip measures
+ * `--drawer-collapsed-h` + safe-bottom (78 + 24 = 102px on the Pixel), while a
+ * measurement taken during the slide reads up to the sheet's full 62dvh (471px)
+ * — 4.6x. 1.6 leaves generous room for sub-pixel rounding, a font swap that
+ * grew the tab row past its token, and Hebrew's taller line box, while still
+ * rejecting anything mid-animation by a wide margin.
+ */
+const COLLAPSED_STRIP_TOLERANCE = 1.6;
+
+/**
+ * What the collapsed strip SHOULD intrude from the canvas bottom, derived from
+ * CSS rather than from the sheet's current position.
+ *
+ * Deliberately does NOT consult `collapsedDrawerPx`: this is the predicate that
+ * decides whether a candidate measurement is trustworthy enough to become
+ * `collapsedDrawerPx`, so letting a past measurement vouch for the next one
+ * would let one bad reading validate its own successors forever.
+ *
+ * The geometry it predicts is exact, not a guess. `.panels` is
+ * `position: fixed; bottom: 0` and `.build-panel` is translated by
+ * `100% - var(--drawer-collapsed-h) - var(--safe-bottom)`, so the collapsed
+ * sheet's top edge sits exactly that far above the viewport bottom — which,
+ * with the canvas full-bleed, is exactly `edgeIntrusion()`'s `fromBottom`.
+ * @returns {number} 0 when neither the token nor a C3 payload is available.
+ */
+function predictedCollapsedIntrusion(node, safeBottom) {
+  let strip = cssDrawerCollapsedPx(node);
+  if (!(strip > 0)) strip = collapsedDrawerHintPx;
+  if (!(strip > 0)) return 0;
+  return strip + (safeBottom > 0 ? safeBottom : 0);
+}
+
+/**
+ * How far the drawer's COLLAPSED strip would intrude from the canvas bottom.
+ *
+ * This exists because the "only the collapsed strip counts" clamp had a hole:
+ * it needs a collapsed measurement, and there is no guarantee one has ever been
+ * taken. The player can expand the sheet before the first UI tick; a save with
+ * the sheet remembered open restores expanded; a rotation clears the measured
+ * value while the sheet is up. Without a fallback the clamp is skipped and the
+ * FULL 471px sheet becomes a bottom inset (capped at 40%), which squashes the
+ * casino into a band and un-squashes it the moment the sheet closes — the exact
+ * seasick re-framing the clamp exists to prevent.
+ *
+ * Preference order is freshest-and-most-direct first:
+ *   1. a real measurement of the collapsed strip (already in canvas-edge units),
+ *   2. the live `--drawer-collapsed-h` token,
+ *   3. the last `drawer:changed` payload (contract C3).
+ * 2 and 3 are drawer-local heights, so the safe-area gap the sheet is
+ * translated up by is added back to put them in canvas-edge units.
+ * @returns {number} 0 when the strip is genuinely unknown.
+ */
+function collapsedDrawerIntrusion(node, safeBottom) {
+  if (collapsedDrawerPx > 0) return collapsedDrawerPx;
+  let strip = cssDrawerCollapsedPx(node);
+  if (!(strip > 0)) strip = collapsedDrawerHintPx;
+  if (!(strip > 0)) return 0;
+  return strip + (safeBottom > 0 ? safeBottom : 0);
+}
+
+/**
+ * Measure the chrome floating over the canvas and hand it to the renderer.
+ * Cheap enough to run on the 0.25s UI tick, which is what makes this
+ * self-healing: whatever any other module does to the layout, the camera's idea
+ * of the visible rectangle catches up within a quarter second.
+ */
+function applyViewInsets() {
+  if (!renderer || typeof renderer.setViewInsets !== 'function') return; // WS-RENDER may not have landed yet
+  if (!canvas || !canvas.getBoundingClientRect) return;
+  if (typeof document === 'undefined' || !document.querySelector) return;
+
+  const box = canvas.getBoundingClientRect();
+  if (!(box.width > 0) || !(box.height > 0)) return;
+
+  // The safe area is the floor: even with no chrome at all, nothing may be
+  // framed under the punch-hole camera or the gesture bar.
+  const insets = safeAreaInsets();
+  // Captured before the loop mutates `insets`: the collapsed-strip fallback is
+  // a drawer-local height and needs the raw safe-area gap, not a running max.
+  const safeBottomPx = insets.bottom;
+  const maxX = box.width * INSET_MAX_FRACTION;
+  const maxY = box.height * INSET_MAX_FRACTION;
+
+  for (let i = 0; i < INSET_SELECTORS.length; i++) {
+    const sel = INSET_SELECTORS[i];
+    const node = safe(() => document.querySelector(sel), 'querySelector ' + sel);
+    if (!node || typeof node.getBoundingClientRect !== 'function') continue;
+    const hit = edgeIntrusion(node.getBoundingClientRect(), box);
+    if (!hit) continue;
+
+    let amount = hit.amount;
+    if (hit.edge === 'bottom' && node.classList) {
+      // The expanded drawer is a temporary sheet the player pulled up; framing
+      // the casino above it (and re-framing again on every open/close) would be
+      // seasick. Only the COLLAPSED strip is permanent chrome.
+      //
+      // "Collapsed" is NOT simply the absence of `.is-expanded`. The sheet
+      // slides on `transition: transform var(--dur-slow)` (320ms) and
+      // panels.js flips the classes the instant the collapse STARTS, so for a
+      // third of a second the class says collapsed while
+      // getBoundingClientRect() still returns the full 471px sheet. Recording
+      // that as the collapsed strip is not a cosmetic slip: it becomes the
+      // ceiling every later clamp is measured against, so one collapse gesture
+      // pins a 40%-of-the-canvas bottom inset that only unwinds when panels.js
+      // re-emits on transitionend — and if the player re-opens the sheet
+      // inside that window, the clamp this whole branch exists for is a no-op.
+      // So cross-check the reading against what CSS says the strip must be.
+      const predicted = predictedCollapsedIntrusion(node, safeBottomPx);
+      const settled =
+        !node.classList.contains('is-expanded') &&
+        // No token and no C3 payload: nothing to check against, so trust the
+        // measurement exactly as this code did before the check existed.
+        (!(predicted > 0) || amount <= predicted * COLLAPSED_STRIP_TOLERANCE);
+      if (!settled) {
+        const strip = collapsedDrawerIntrusion(node, safeBottomPx);
+        if (strip > 0) {
+          amount = Math.min(amount, strip);
+        } else if (lastViewInsets) {
+          // Strip genuinely unknown (no measurement, no token, no C3 payload):
+          // hold whatever bottom inset the camera was already framing against
+          // rather than letting a temporary sheet redefine it.
+          amount = Math.min(amount, lastViewInsets.bottom);
+        } else {
+          // Nothing known at all — first pass, sheet already open. An expanded
+          // sheet is transient chrome, so framing UNDER it is the lesser evil:
+          // the alternative is a 40%-of-the-screen inset that snaps back the
+          // instant the player closes the sheet.
+          amount = 0;
+        }
+      } else {
+        collapsedDrawerPx = amount;
+      }
+    }
+
+    const cap = hit.edge === 'left' || hit.edge === 'right' ? maxX : maxY;
+    if (amount > cap) amount = cap;
+    if (amount > insets[hit.edge]) insets[hit.edge] = amount;
+  }
+
+  // Sub-pixel churn (a scrollbar-less relayout, a font swap) must not thrash
+  // fitView; the renderer no-ops on equal values, we no-op on near-equal ones.
+  if (
+    lastViewInsets &&
+    Math.abs(lastViewInsets.top - insets.top) < 0.5 &&
+    Math.abs(lastViewInsets.right - insets.right) < 0.5 &&
+    Math.abs(lastViewInsets.bottom - insets.bottom) < 0.5 &&
+    Math.abs(lastViewInsets.left - insets.left) < 0.5
+  ) {
+    return;
+  }
+  lastViewInsets = insets;
+  safe(() => renderer.setViewInsets(insets), 'renderer.setViewInsets');
+}
+
 /* ---------------- wheel ---------------- */
 
 function onCanvasWheel(ev) {
@@ -641,12 +1028,34 @@ function onCanvasWheel(ev) {
 
 /* ---------------- pointer (drag pan / pinch / click) ---------------- */
 
-function pinchState() {
-  const list = [];
-  pointers.forEach((v) => list.push(v));
-  if (list.length < 2) return null;
-  const a = list[0];
-  const b = list[1];
+/** Wall clock for pointer bookkeeping; performance.now() when it exists. */
+function nowMs() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+/** The first two live contacts, in insertion order — the pair a pinch adopts. */
+function pinchPairIds() {
+  const ids = [];
+  pointers.forEach((v, id) => {
+    if (ids.length < 2) ids.push(id);
+  });
+  return ids.length === 2 ? ids : null;
+}
+
+/**
+ * Geometry of a specific contact pair. `ids` is the pair the live pinch was
+ * baselined on; without it the first two live contacts are used (arming).
+ * @param {number[]|null} [ids]
+ */
+function pinchState(ids) {
+  const pair = ids && ids.length === 2 ? ids : pinchPairIds();
+  if (!pair) return null;
+  const a = pointers.get(pair[0]);
+  const b = pointers.get(pair[1]);
+  if (!a || !b) return null;
   return {
     dist: Math.hypot(a.x - b.x, a.y - b.y),
     midX: (a.x + b.x) / 2,
@@ -655,10 +1064,12 @@ function pinchState() {
 }
 
 function beginPinch() {
-  const s = pinchState();
-  if (!s || !(s.dist > 0)) return;
+  const ids = pinchPairIds();
+  const s = pinchState(ids);
+  if (!ids || !s || !(s.dist > 0)) return;
   const z = renderer && typeof renderer.getZoom === 'function' ? Number(renderer.getZoom()) : 1;
   pinch = {
+    ids,
     startDist: s.dist,
     startZoom: Number.isFinite(z) && z > 0 ? z : 1,
     midX: s.midX,
@@ -667,13 +1078,50 @@ function beginPinch() {
   if (gesture) gesture.canClick = false; // a second finger is never a tap
 }
 
+/**
+ * Drop contacts the browser never closed out. Two signals, both cheap:
+ *   - a PRIMARY touch pointerdown means the browser considers this the first
+ *     finger of a new touch session, so anything still in the map is a leak;
+ *   - anything not updated for POINTER_STALE_MS is gone whatever the browser
+ *     thinks (covers a stolen non-primary contact, and mouse/pen).
+ * Without this a single lost contact wedges pinch AND pan forever, with no
+ * recovery short of a reload — the exact failure this file is defending against.
+ */
+function prunePointers(ev) {
+  if (ev && ev.pointerType === 'touch' && ev.isPrimary === true && pointers.size > 0) {
+    resetPointers();
+    return;
+  }
+  if (pointers.size === 0) return;
+  const cutoff = nowMs() - POINTER_STALE_MS;
+  const stale = [];
+  pointers.forEach((p, id) => {
+    if (!p || !Number.isFinite(p.t) || p.t < cutoff) stale.push(id);
+  });
+  for (let i = 0; i < stale.length; i++) {
+    pointers.delete(stale[i]);
+    if (gesture && gesture.id === stale[i]) gesture = null;
+    if (pinch && (pinch.ids[0] === stale[i] || pinch.ids[1] === stale[i])) pinch = null;
+  }
+}
+
+/** Hard reset of all pointer state (app switch, lost focus, leaked contacts). */
+function resetPointers() {
+  pointers.clear();
+  gesture = null;
+  pinch = null;
+  if (canvas && canvas.style) canvas.style.cursor = '';
+}
+
 function onCanvasPointerDown(ev) {
   if (!canvas) return;
   // Chrome only grants a wake lock to a visible document and sometimes only
   // after an interaction; a touch is the cheapest place to retry (the call
   // early-returns once we hold one, or after a few refusals).
   if (!wakeLock) acquireWakeLock();
+  prunePointers(ev);
   const p = cssPos(ev);
+  p.t = nowMs();
   pointers.set(ev.pointerId, p);
 
   if (canvas.setPointerCapture) {
@@ -698,7 +1146,9 @@ function onCanvasPointerDown(ev) {
     maxDist: 0,
     slop: clickSlopFor(ev.pointerType),
     // Only the primary button starts a click; middle/right drag pans only.
-    canClick: !Number.isFinite(ev.button) || ev.button === 0
+    canClick: !Number.isFinite(ev.button) || ev.button === 0,
+    // Nothing pans until the slop is cleared — see onCanvasPointerMove.
+    panning: false
   };
   if (canvas.style) canvas.style.cursor = 'grabbing';
 }
@@ -706,12 +1156,13 @@ function onCanvasPointerDown(ev) {
 function onCanvasPointerMove(ev) {
   if (!pointers.has(ev.pointerId)) return;
   const p = cssPos(ev);
+  p.t = nowMs();
   pointers.set(ev.pointerId, p);
 
   // --- two fingers: pinch zoom about the midpoint, and pan with the midpoint.
   if (pointers.size >= 2) {
     if (!pinch) beginPinch();
-    const s = pinchState();
+    const s = pinchState(pinch ? pinch.ids : null);
     if (!pinch || !s || !(pinch.startDist > 0)) return;
     if (renderer && typeof renderer.setZoom === 'function') {
       const target = pinch.startZoom * (s.dist / pinch.startDist);
@@ -744,9 +1195,84 @@ function onCanvasPointerMove(ev) {
 
   const moved = Math.hypot(p.x - gesture.startX, p.y - gesture.startY);
   if (moved > gesture.maxDist) gesture.maxDist = moved;
-  if (gesture.maxDist > (gesture.slop || CAM.clickMaxDist)) gesture.canClick = false;
+  const slop = gesture.slop || CAM.clickMaxDist;
+  if (gesture.maxDist > slop) gesture.canClick = false;
+
+  /*
+   * TOUCH SLOP. A finger held on a small target still wobbles a few px per
+   * frame, and every one of those wobbles used to reach cameraPanBy — so the
+   * world visibly crept out from under a stationary finger during a deliberate
+   * tap (14px of slop is a lot of creep at the ~0.5 fit zoom).
+   *
+   * The gate is one-way, and the pre-slop travel is DISCARDED, never
+   * accumulated and dumped in the frame the gesture is recognised — that would
+   * snap the world by the whole slop radius, which is worse than the creep it
+   * replaces.
+   *
+   * On the move that crosses the threshold, only the part of that move lying
+   * beyond the slop radius is applied. Doing the obvious thing instead —
+   * dropping the crossing move whole — throws away as much as one full sample
+   * of travel, and a fast flick can be sampled ONCE: a 60px first move would
+   * lose all 60px, then the finger's return leg would pan the full way back and
+   * the camera would end up displaced from a gesture that went nowhere. Scaling
+   * bounds the loss at exactly `slop` px however coarsely the digitiser
+   * reports, which is what the platform's own scrollers do.
+   */
+  if (!gesture.panning) {
+    if (gesture.maxDist <= slop) return;
+    gesture.panning = true;
+    // maxDist can only have crossed on THIS move, so it equals `moved` here and
+    // moved - slop is the travel that is genuinely a pan.
+    const len = Math.hypot(dx, dy);
+    if (!(len > 0)) return;
+    const keep = Math.min(1, Math.max(0, moved - slop) / len);
+    if (!(keep > 0)) return;
+    cameraPanBy(dx * keep, dy * keep);
+    return;
+  }
 
   cameraPanBy(dx, dy);
+}
+
+/**
+ * A finger is still down but nothing owns it: adopt it as a fresh single-pointer
+ * gesture so panning continues seamlessly after the other finger lifts.
+ *
+ * The origin is seeded from where that finger is RIGHT NOW (pointers holds its
+ * live position, kept current by onCanvasPointerMove) — never from where it was
+ * when the pinch started. Seeding from the stale origin would feed the whole
+ * accumulated pinch displacement into cameraPanBy on the very next move, which
+ * is the same trap the "keep the frozen gesture in sync" comment in
+ * onCanvasPointerMove above exists to avoid.
+ *
+ * canClick stays false (and maxDist Infinity): the tail of a pinch is never a
+ * tap, so lifting the second finger must not resolve a thief or tip a guest.
+ * `panning` starts true for the same reason — the slop gate is there to protect
+ * taps, and this contact has already been disqualified from being one, so
+ * making it re-earn the threshold would just drop the first move of the pan.
+ */
+function promoteSurvivingPointer() {
+  if (gesture || pointers.size !== 1) return;
+  let id = -1;
+  let p = null;
+  pointers.forEach((v, k) => {
+    if (!p) {
+      id = k;
+      p = v;
+    }
+  });
+  if (!p) return;
+  gesture = {
+    id,
+    startX: p.x,
+    startY: p.y,
+    lastX: p.x,
+    lastY: p.y,
+    maxDist: Infinity,
+    slop: CAM.clickMaxDistTouch,
+    canClick: false,
+    panning: true
+  };
 }
 
 function endPointer(ev, cancelled) {
@@ -759,16 +1285,27 @@ function endPointer(ev, cancelled) {
     }
   }
 
-  if (pointers.size < 2) pinch = null;
-
-  if (!gesture || gesture.id !== ev.pointerId) {
-    if (pointers.size === 0 && canvas && canvas.style) canvas.style.cursor = '';
-    return;
+  // The pinch dies with either of the two contacts it was baselined on. If
+  // other contacts are still down, re-arm immediately against the new pair so
+  // the gesture continues from the CURRENT geometry instead of snapping to a
+  // stale startDist/mid.
+  if (pinch && (pinch.ids[0] === ev.pointerId || pinch.ids[1] === ev.pointerId)) {
+    pinch = null;
+    if (pointers.size >= 2) beginPinch();
+  } else if (pointers.size < 2) {
+    pinch = null;
   }
 
-  const g = gesture;
-  gesture = null;
+  const owned = !!gesture && gesture.id === ev.pointerId;
+  const g = owned ? gesture : null;
+  if (owned) gesture = null;
+
+  // Whoever is left keeps panning — including the case this whole helper exists
+  // for: the FIRST finger (the one that owned `gesture`) lifting out of a pinch.
+  promoteSurvivingPointer();
+
   if (pointers.size === 0 && canvas && canvas.style) canvas.style.cursor = '';
+  if (!owned || !g) return;
   if (!had || cancelled) return;
 
   const p = cssPos(ev);
@@ -952,6 +1489,10 @@ function applyLocaleToUI() {
     relocalizeModule(UI_MODULES[i].mod, UI_MODULES[i].label);
   }
   relocalizeModule(pwaUI, 'pwa');
+  relocalizeModule(tutorialUI, 'tutorial');
+  // Hebrew and English HUD rows are not the same height, so the chrome the
+  // camera has to stay clear of changes with the language.
+  applyViewInsets();
   // Anything the renderer baked into a cached layer (tier / venue captions)
   // has to be drawn again in the new language.
   if (renderer && typeof renderer.invalidate === 'function') {
@@ -1034,16 +1575,174 @@ function mountPwaUI() {
   });
 }
 
+/* ---------------- guide / help (contract C7, module lands in phase B) ------ *
+ *
+ *  ./ui/tutorial.js is loaded the same defensive way as ./ui/pwa.js: a dynamic
+ *  import, one shared promise, every failure swallowed. It is entirely optional
+ *  — a build without the file boots and plays identically, it just has no
+ *  guide. Contract this shell calls:
+ *      initTutorial({ bus, t, state, save })   optional, once at boot
+ *      maybeStartFirstRun()                    optional, once after boot
+ *      openHelp(page)                          optional, from the '?' button
+ *  Anything missing is skipped, not thrown.
+ * -------------------------------------------------------------------------- */
+
+/** @type {Promise<any>|null} shared, so the module is fetched at most once. */
+let tutorialModulePromise = null;
+/** The resolved ./ui/tutorial.js namespace, or null while unavailable. */
+/** @type {{initTutorial?:Function, maybeStartFirstRun?:Function, openHelp?:Function}|null} */
+let tutorialUI = null;
+
+function loadTutorialModule() {
+  if (tutorialModulePromise) return tutorialModulePromise;
+  let p = null;
+  try {
+    p = import('./ui/tutorial.js');
+  } catch (err) {
+    p = null;
+  }
+  if (!p || typeof p.then !== 'function') {
+    tutorialModulePromise = Promise.resolve(null);
+    return tutorialModulePromise;
+  }
+  tutorialModulePromise = p
+    .then((mod) => {
+      tutorialUI = mod || null;
+      return tutorialUI;
+    })
+    .catch((err) => {
+      tutorialUI = null;
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('[main] ui/tutorial.js unavailable:', err && err.message ? err.message : err);
+      }
+      return null;
+    });
+  return tutorialModulePromise;
+}
+
+/**
+ * Retire the '?' button. `hidden` alone is not enough: it is a UA-stylesheet
+ * `display: none`, and BOTH `.action-btn { display: inline-block }` and the
+ * phone block's `.action-btn { display: inline-flex }` are author rules, which
+ * beat the UA origin outright regardless of specificity — the button would stay
+ * on screen, still occupying one of the seven 44px slots in the dock's single
+ * row. The inline style is the one declaration that reliably wins; `hidden`
+ * stays for the accessibility-tree semantics.
+ */
+function retireHelpButton() {
+  if (!helpActionBtn) return;
+  helpActionBtn.hidden = true;
+  if (helpActionBtn.style) helpActionBtn.style.display = 'none';
+}
+
+/** Boot hook: wire the guide's listeners and let it decide about a first run. */
+function mountTutorial() {
+  loadTutorialModule().then((mod) => {
+    // No guide module in this build: take the dead control out of the dock now
+    // rather than waiting for the player to discover it does nothing. Ordering
+    // is safe — boot() calls mountActionBar() before mountTutorial(), so
+    // helpActionBtn exists by the time this promise settles.
+    if (!mod || typeof mod.openHelp !== 'function') retireHelpButton();
+    if (!mod) return;
+    if (typeof mod.initTutorial === 'function') {
+      safe(() => mod.initTutorial({ bus, t, state, save }), 'tutorial.initTutorial');
+    }
+    if (typeof mod.maybeStartFirstRun === 'function') {
+      safe(() => mod.maybeStartFirstRun(), 'tutorial.maybeStartFirstRun');
+    }
+  });
+}
+
+/** The '?' button. Degrades to a no-op — and hides itself — with no module. */
+function openHelp(page) {
+  loadTutorialModule().then((mod) => {
+    if (mod && typeof mod.openHelp === 'function') {
+      safe(() => mod.openHelp(Number.isFinite(page) ? page : 0), 'tutorial.openHelp');
+      return;
+    }
+    // A control that does nothing is worse than no control: retire it rather
+    // than leave the player tapping a dead button.
+    retireHelpButton();
+  });
+}
+
 /**
  * @param {HTMLElement} bar
  * @param {string} labelKey locale key for the visible label
  * @param {string} titleKey locale key for the tooltip
  * @param {Function} onClick
  */
+/**
+ * Split an action label like "🌍 Worlds" / "🌍 עולמות" into its leading glyph
+ * and the words after it.
+ *
+ * The dock is one non-wrapping row. On a 411px phone, six labelled pills plus
+ * the PWA install chip need ~445px, so every label was rendering as a clipped
+ * stub ("🌍 …", "🃏 Bl…") — which reads as broken rather than compact, and gets
+ * worse in Hebrew where the words are longer. Emitting the icon and the text as
+ * separate spans lets the phone stylesheet hide `.action-btn-text` and keep a
+ * clean icon-only dock, while the words stay in the DOM (and in `title` /
+ * `aria-label`) for wide screens and for assistive tech.
+ *
+ * @returns {{icon:string, text:string}} icon is '' when the label has no glyph.
+ */
+function splitActionLabel(label) {
+  const s = typeof label === 'string' ? label.trim() : '';
+  const cut = s.indexOf(' ');
+  if (cut <= 0) return { icon: '', text: s };
+  const head = s.slice(0, cut);
+  // A leading segment is an icon only if it carries no letters or digits at
+  // all — that keeps a genuinely text-only label (or a translation that drops
+  // the emoji) from losing its first word.
+  if (/[\p{L}\p{N}]/u.test(head)) return { icon: '', text: s };
+  return { icon: head, text: s.slice(cut + 1).trim() };
+}
+
+/**
+ * Paint an action button's label as icon + text spans.
+ *
+ * Every branch must leave the button showing SOMETHING at icon-only sizes. The
+ * phone stylesheet hides `.action-btn-text`, so writing a bare text node is
+ * never safe: the ad button's cooldown label ("Ready in 42s" / "זמין בעוד 42 שנ׳")
+ * carries no emoji, and as bare text it rendered inside the 44px pill and
+ * clipped to a stub for the whole ~4 minute cooldown — the exact failure the
+ * icon-only dock exists to remove.
+ *
+ *  - label with a glyph ("🎬 Watch ad")  -> that glyph + hidden words
+ *  - label that IS a glyph ("?")          -> the glyph itself, never hidden
+ *  - glyph-less words ("Ready in 42s")    -> keep the glyph the button already
+ *                                            had, hide the words
+ */
+function setActionLabel(btn, label) {
+  if (!btn) return;
+  const { icon, text } = splitActionLabel(label);
+
+  // A label that is itself a single symbol (the help "?") is the icon.
+  if (!icon && text.length <= 2) {
+    btn.textContent = text;
+    return;
+  }
+
+  const prev = btn.querySelector ? btn.querySelector('.action-btn-glyph') : null;
+  const glyph = icon || (prev && prev.textContent) || '';
+
+  btn.textContent = '';
+  if (glyph) {
+    const i = el('span', 'action-btn-glyph', glyph);
+    i.setAttribute('aria-hidden', 'true');
+    btn.appendChild(i);
+  }
+  btn.appendChild(el('span', 'action-btn-text', text));
+}
+
 function actionButton(bar, labelKey, titleKey, onClick) {
-  const btn = el('button', 'action-btn', t(labelKey));
+  const btn = el('button', 'action-btn');
+  setActionLabel(btn, t(labelKey));
   btn.type = 'button';
   btn.title = t(titleKey);
+  // The words can be visually hidden on phones, so the accessible name must not
+  // depend on them being rendered.
+  btn.setAttribute('aria-label', t(titleKey));
   btn.addEventListener('click', onClick);
   bar.appendChild(btn);
   actionButtons.push({ btn, labelKey, titleKey });
@@ -1074,6 +1773,14 @@ function mountActionBar() {
     safe(() => monetization.tryWatchAd(null), 'tryWatchAd')
   );
 
+  // The guide's entry point (contract C7). The module that answers it is
+  // phase B; until it exists openHelp() is a no-op, never a boot failure.
+  helpActionBtn = actionButton(bar, 'action.help', 'action.helpTitle', () => openHelp());
+  helpActionBtn.classList.add('action-btn--help');
+  // The label is the language-neutral '?' glyph, so the accessible name has to
+  // come from the title key or a screen reader announces "question mark".
+  helpActionBtn.setAttribute('aria-label', t('action.helpTitle'));
+
   layer.appendChild(bar);
   updateAdButton();
 }
@@ -1086,8 +1793,9 @@ function relabelActionBar() {
     const entry = actionButtons[i];
     if (!entry || !entry.btn) continue;
     entry.btn.title = t(entry.titleKey);
+    entry.btn.setAttribute('aria-label', t(entry.titleKey));
     // The ad button's label depends on its cooldown, so updateAdButton() owns it.
-    if (entry.btn !== adActionBtn) entry.btn.textContent = t(entry.labelKey);
+    if (entry.btn !== adActionBtn) setActionLabel(entry.btn, t(entry.labelKey));
   }
   updateAdButton();
 }
@@ -1100,11 +1808,163 @@ function updateAdButton() {
     const seconds = safe(() => monetization.getAdCooldownSeconds(), 'getAdCooldownSeconds') || 0;
     adActionBtn.disabled = true;
     adActionBtn.classList.add('is-disabled');
-    adActionBtn.textContent = t('ad.buttonCooldown', { seconds });
+    setActionLabel(adActionBtn, t('ad.buttonCooldown', { seconds }));
   } else {
     adActionBtn.disabled = false;
     adActionBtn.classList.remove('is-disabled');
-    adActionBtn.textContent = t('ad.button');
+    setActionLabel(adActionBtn, t('ad.button'));
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Android hardware Back -> close the top modal
+ *
+ *  In an installed PWA ("display": "standalone") the document has exactly one
+ *  history entry, so the system Back gesture leaves the GAME — mid-blackjack,
+ *  mid-shop — instead of dismissing the modal that is on screen. That is the
+ *  single most jarring thing the app does on a phone.
+ *
+ *  The mechanism is deliberately DOM-driven rather than an API every modal
+ *  owner has to call: main.js watches the modal hosts, and for every open
+ *  `.modal-backdrop` there is exactly one history entry we pushed. That keeps
+ *  it correct for modals main.js does not own (worldMap / minigames /
+ *  monetization) and for the ones that stack, without those modules changing a
+ *  line — and it survives the player closing via the × (the entry we pushed is
+ *  unwound with history.go, guarded so our own unwind is not read as a Back).
+ * ------------------------------------------------------------------ */
+
+/** History entries pushed for currently-open modals. */
+let modalHistoryDepth = 0;
+/**
+ * How many modals are on screen right now (gap G3).
+ *
+ * SINGLE SOURCE OF TRUTH, deliberately: the render pause reads the very same
+ * number the Android Back guard reconciles against, refreshed in the very same
+ * pass, so the two can never disagree about whether a modal is up. A second
+ * open/close counter maintained by the modal owners would have to be correct in
+ * five modules that main.js does not own — and the coach-mark layer, which is
+ * NOT a modal (`.coach-layer` / `.coach-backdrop`, per contract C1) and must
+ * keep the floor animating underneath it, would be miscounted by exactly that.
+ */
+let modalOpenCount = 0;
+/** Traversals WE requested, so the resulting popstate is not read as a Back. */
+let pendingHistoryBack = 0;
+/** rAF handle coalescing several DOM mutations into one sync. */
+let modalSyncQueued = false;
+
+/** Every `.modal-backdrop` that is actually on screen, in DOM (stacking) order. */
+function openModalBackdrops() {
+  const out = [];
+  if (typeof document === 'undefined' || !document.querySelectorAll) return out;
+  const list = safe(() => document.querySelectorAll('.modal-backdrop'), 'querySelectorAll modal');
+  if (!list) return out;
+  for (let i = 0; i < list.length; i++) {
+    const node = list[i];
+    if (!node || typeof node.getClientRects !== 'function') continue;
+    // A detached or display:none backdrop has no boxes: not an open modal.
+    if (node.getClientRects().length === 0) continue;
+    out.push(node);
+  }
+  return out;
+}
+
+/**
+ * Close the topmost modal the way the player would.
+ * Driving the module's own '×' (or, failing that, a backdrop click) keeps its
+ * teardown running — bus.off, cleared intervals, reset flags — instead of
+ * ripping the node out from under a module that still thinks it is open.
+ * @returns {boolean} true when something was asked to close.
+ */
+function closeTopModal() {
+  const open = openModalBackdrops();
+  if (open.length === 0) return false;
+  const top = open[open.length - 1];
+
+  const closeBtn = top.querySelector ? top.querySelector('.modal-close') : null;
+  if (closeBtn && typeof closeBtn.click === 'function' && !closeBtn.disabled) {
+    safe(() => closeBtn.click(), 'modal.close');
+    return true;
+  }
+  // Backdrop handlers all test `e.target === backdrop`, so the event has to be
+  // dispatched on the backdrop itself, not bubbled from a child.
+  if (typeof MouseEvent === 'function' && typeof top.dispatchEvent === 'function') {
+    safe(() => top.dispatchEvent(new MouseEvent('click', { bubbles: true })), 'modal.backdropClick');
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Reconcile the pushed history entries with the modals actually on screen.
+ * Runs on every mutation of a modal host and again on the UI tick, so it also
+ * repairs any drift (a modal that refused to close, one opened from a code path
+ * that never mutates a watched host).
+ */
+function syncModalHistory() {
+  // Recount FIRST and unconditionally. The render pause depends on this number,
+  // and it must stay correct even where there is no History API to reconcile
+  // against (the early return below) — otherwise the canvas would freeze under
+  // a modal that opened before the last successful sync and never resume.
+  const count = openModalBackdrops().length;
+  modalOpenCount = count;
+  if (typeof history === 'undefined' || typeof history.pushState !== 'function') return;
+
+  while (modalHistoryDepth < count) {
+    modalHistoryDepth++;
+    // Same URL — only a state entry. ensureTrailingSlash()'s replaceState and
+    // the service worker scope are untouched.
+    safe(() => history.pushState({ casinoModal: modalHistoryDepth }, ''), 'history.pushState');
+  }
+
+  if (modalHistoryDepth > count) {
+    // Closed by the × / backdrop / its own OK button: give the entries back.
+    // ONE history.go(-n) produces ONE popstate, so one suppression is enough.
+    const steps = modalHistoryDepth - count;
+    modalHistoryDepth = count;
+    pendingHistoryBack++;
+    safe(() => history.go(-steps), 'history.go');
+  }
+}
+
+/** Coalesce a burst of DOM mutations (a modal is many appendChilds) into one sync. */
+function scheduleModalSync() {
+  if (modalSyncQueued) return;
+  modalSyncQueued = true;
+  const run = () => {
+    modalSyncQueued = false;
+    syncModalHistory();
+  };
+  if (typeof window !== 'undefined' && window.requestAnimationFrame) window.requestAnimationFrame(run);
+  else run();
+}
+
+function onPopState() {
+  if (pendingHistoryBack > 0) {
+    pendingHistoryBack--; // our own unwind, not a Back press
+    return;
+  }
+  if (modalHistoryDepth <= 0) return; // nothing of ours on the stack: let the app close
+  modalHistoryDepth--;
+  const closed = closeTopModal();
+  if (!closed) modalHistoryDepth = 0;
+  // A modal that refuses to close (the ad, mid-playback) re-pushes its entry.
+  scheduleModalSync();
+}
+
+/** Watch the modal hosts so a modal is guarded the frame it appears. */
+function watchModalHosts() {
+  if (typeof MutationObserver !== 'function' || typeof document === 'undefined') return;
+  const hosts = [byId('modals'), byId('ui-layer'), document.body];
+  const observer = new MutationObserver(scheduleModalSync);
+  const seen = [];
+  for (let i = 0; i < hosts.length; i++) {
+    const host = hosts[i];
+    if (!host || seen.indexOf(host) !== -1) continue;
+    seen.push(host);
+    // childList only, no subtree: every modal in this app is appended as a
+    // direct child of one of these hosts, and a subtree watch would fire on
+    // every HUD text update four times a second for nothing.
+    safe(() => observer.observe(host, { childList: true }), 'observe modal host');
   }
 }
 
@@ -1256,11 +2116,35 @@ function frame(now) {
   rafId = window.requestAnimationFrame(frame);
 
   const t = Number.isFinite(now) ? now : 0;
-  let dt = lastFrame ? (t - lastFrame) / 1000 : 0;
+  let rawDt = lastFrame ? (t - lastFrame) / 1000 : 0;
   lastFrame = t;
-  if (!Number.isFinite(dt) || dt < 0) dt = 0;
+  if (!Number.isFinite(rawDt) || rawDt < 0) rawDt = 0;
+
+  /*
+   * TWO clocks, on purpose.
+   *
+   *   dt (clamped)  drives the SIMULATION. The clamp is what stops a 2-second
+   *                 hitch from teleporting every guest across the floor and
+   *                 firing a burst of live events in one step.
+   *   rawDt         drives everything measured in WALL-CLOCK seconds: the 1s
+   *                 income tick, the UI tick, the autosave timer. Feeding those
+   *                 the clamped value meant a phone rendering at 12fps
+   *                 (rawDt 0.083) credited only 0.05s per frame — the player
+   *                 earned ~60% of the $/s the HUD was advertising, and
+   *                 autosaved every 17s instead of 10s, silently.
+   *
+   * This does NOT reintroduce the backgrounded-tab jackpot the clamp used to
+   * cover for: time spent hidden never reaches this function. visibilitychange
+   * -> onHidden() stops the loop, and startLoop() resets lastFrame to 0, so the
+   * first frame after a resume measures rawDt = 0. The away time is credited
+   * exactly once, through grantOffline() (which has its own cap and offline
+   * rate). RAW_DT_CAP is only a sanity bound for a stall the loop did survive —
+   * a long GC, a blocked main thread, an rAF throttled by an occluded window —
+   * where the seconds really did elapse with the game on screen.
+   */
   const maxDt = Number(CONFIG.loop.maxDt) > 0 ? Number(CONFIG.loop.maxDt) : 0.05;
-  if (dt > maxDt) dt = maxDt;
+  if (rawDt > RAW_DT_CAP) rawDt = RAW_DT_CAP;
+  const dt = rawDt > maxDt ? maxDt : rawDt;
 
   // --- simulation -------------------------------------------------
   if (dt > 0) {
@@ -1274,16 +2158,33 @@ function frame(now) {
 
   // --- 1s income tick ---------------------------------------------
   const tickSeconds = Math.max(0.05, (Number(CONFIG.loop.incomeTickMs) || 1000) / 1000);
-  incomeAcc += dt;
-  let guard = 5;
+  incomeAcc += rawDt;
+  // High enough to drain a full RAW_DT_CAP stall in the frame that follows it.
+  let guard = 20;
   while (incomeAcc >= tickSeconds && guard-- > 0) {
     incomeAcc -= tickSeconds;
     safe(() => payIncome(tickSeconds), 'payIncome');
   }
   if (incomeAcc > tickSeconds) incomeAcc = 0;
 
-  // --- render ------------------------------------------------------
-  if (renderer) {
+  /* --- render ------------------------------------------------------
+   *
+   * Gap G3: a modal covers the canvas, and `.modal-backdrop` puts a
+   * backdrop-filter blur over it — so every frame drawn underneath makes the
+   * compositor re-run a full-screen gaussian blur for pixels nobody can see,
+   * at 60Hz, while the wake lock (below) holds the screen on. That is pure
+   * battery burn and it is exactly when the modal's own animations need the
+   * main thread.
+   *
+   * Only the DRAW is skipped. The simulation, the income tick, the UI tick and
+   * autosave above all keep running, so nothing is lost or double-credited:
+   * `running` stays true, the rAF loop keeps turning, and the frame after the
+   * modal closes paints the world in its current state. fitPending and
+   * lastZoomSent are latches, so a fitView or a zoom change that happened
+   * behind the modal is applied on that first frame back rather than dropped.
+   */
+  if (renderer && (modalOpenCount === 0 || renderWarmup > 0)) {
+    if (renderWarmup > 0) renderWarmup--;
     const w = activeWorld();
     safe(
       () =>
@@ -1305,7 +2206,7 @@ function frame(now) {
   }
 
   // --- UI ----------------------------------------------------------
-  uiAcc += dt;
+  uiAcc += rawDt;
   if (uiAcc >= TUNING.uiTick) {
     uiAcc = 0;
     if (guestSim && typeof hud.setLiveGuestCount === 'function') {
@@ -1314,10 +2215,15 @@ function frame(now) {
     safe(() => hud.update(), 'hud.update');
     safe(() => panels.update(), 'panels.update');
     updateAdButton();
+    // Both of these are measurements, not state: they re-read the DOM and
+    // no-op when nothing moved, which is what makes the camera insets and the
+    // Back-button guard self-healing whatever any other module does.
+    applyViewInsets();
+    syncModalHistory();
   }
 
   // --- autosave ----------------------------------------------------
-  saveAcc += dt;
+  saveAcc += rawDt;
   const autosave = Math.max(1, (Number(CONFIG.loop.autosaveMs) || 10000) / 1000);
   if (saveAcc >= autosave) {
     saveAcc = 0;
@@ -1467,6 +2373,10 @@ function onHidden() {
   hardSave();
   stopLoop();
   releaseWakeLock();
+  // Whatever was mid-gesture is not coming back: Chrome does not always fire
+  // pointercancel when it backgrounds the page, and a leaked contact would
+  // leave the canvas permanently stuck in a phantom pinch.
+  resetPointers();
 }
 
 function onVisible() {
@@ -1504,6 +2414,16 @@ function applyViewportChange() {
   if (renderer && typeof renderer.resize === 'function') {
     safe(() => renderer.resize(), 'renderer.resize');
   }
+  // The collapsed strip is viewport-dependent (styles.css retunes
+  // --drawer-collapsed-h under max-height:480px, and it is not even a bottom
+  // sheet on a wide layout), so a measurement taken before this change is no
+  // longer ground truth. Dropping it makes collapsedDrawerIntrusion() fall
+  // through to the live CSS token, which IS current for the new viewport; the
+  // very next tick with the sheet collapsed re-measures it for real.
+  collapsedDrawerPx = 0;
+  // The chrome moved with the viewport (URL bar, rotation, split screen), so
+  // re-measure it before anything re-frames against it.
+  applyViewInsets();
   const portrait = isPortrait();
   const flipped = lastPortrait !== null && portrait !== lastPortrait;
   lastPortrait = portrait;
@@ -1554,6 +2474,7 @@ function boot() {
   safe(() => monetization.mount(byId('modals') || byId('ui-layer')), 'monetization.mount');
   mountActionBar();
   safe(() => mountPwaUI(), 'pwa.mount');
+  safe(() => mountTutorial(), 'tutorial.mount');
   refreshUI();
 
   // --- events ---
@@ -1573,6 +2494,16 @@ function boot() {
   });
   bus.on('ui:refresh', () => {
     refreshUI();
+  });
+  // Contract C3: the drawer opened/collapsed, so the chrome over the canvas
+  // moved. The payload's collapsedHeight is a DRAWER-LOCAL height (panels.js
+  // reads the --drawer-collapsed-h token), not an intrusion from the canvas
+  // edge, so it is stored as the fallback hint and never as the measurement —
+  // mixing the two units under-inset the camera by the safe-area gap.
+  bus.on('drawer:changed', (payload) => {
+    const h = payload ? Number(payload.collapsedHeight) : NaN;
+    if (Number.isFinite(h) && h > 0) collapsedDrawerHintPx = h;
+    applyViewInsets();
   });
 
   // Language switch: re-label everything on screen. Never a reload.
@@ -1619,7 +2550,18 @@ function boot() {
 
   if (typeof window !== 'undefined' && window.addEventListener) {
     window.addEventListener('keydown', onKeyDown);
+    // A gesture that is still "down" when the app loses focus (app switch,
+    // notification shade, permission dialog) never gets its pointerup: the
+    // contact would leak and wedge every later pinch.
+    window.addEventListener('blur', resetPointers);
   }
+
+  // Android Back closes the top modal instead of leaving the game.
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('popstate', onPopState);
+  }
+  watchModalHosts();
+  syncModalHistory();
 
   if (typeof window !== 'undefined' && window.addEventListener) {
     lastPortrait = isPortrait();

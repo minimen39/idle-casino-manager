@@ -56,6 +56,11 @@ let liveGuestCount = 0;
 let toastArea = null;
 let toastSeq = 0;
 
+/** Guards mount() against a second call, which would double-subscribe 'toast'
+ *  (every toast rendered twice) and 'camera:changed', and orphan the first
+ *  bar/zoom cluster in #ui-layer. main.js mounts once; this is belt-and-braces. */
+let mounted = false;
+
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -65,6 +70,66 @@ function el(tag, className, text) {
 
 function safeNumber(v, fallback) {
   return Number.isFinite(v) ? v : fallback;
+}
+
+/*
+ * The per-second unit belongs to the VALUE, never to the label. Both locale
+ * tables historically baked it into the label as well ('hud.income' ==
+ * "Income/s:" / "הכנסה/שנייה:") while update() also appends
+ * t('unit.perSecond') to the number, so the HUD printed the unit twice:
+ * "Income/s: 1.2K/s". The copy half of the fix ships as a locale change
+ * (newLocaleKeys: hud.income -> "Income:" / "הכנסה:"), but this module must
+ * not depend on which side lands first — nor on a future translator putting
+ * "/ש׳" back — so strip a trailing per-second marker off whatever the table
+ * hands us. Runs once per relabel, never per frame.
+ */
+const PER_SECOND_MARKERS = ['/sec', '/s', '/שנייה', '/שניה', '/שנ׳', '/ש׳'];
+
+function stripPerSecond(raw) {
+  let label = String(raw === undefined || raw === null ? '' : raw).replace(/\s+$/, '');
+  // A trailing colon is part of the label's punctuation, not of the unit —
+  // detach it so "Income/s:" is recognised, then put it back.
+  let colon = '';
+  if (label.endsWith(':')) {
+    colon = ':';
+    label = label.slice(0, -1).replace(/\s+$/, '');
+  }
+  const markers = PER_SECOND_MARKERS.concat([t('unit.perSecond'), t('unit.perSecondFull')]);
+  for (const marker of markers) {
+    if (typeof marker !== 'string' || marker.length === 0) continue;
+    if (label.length > marker.length && label.endsWith(marker)) {
+      label = label.slice(0, -marker.length).replace(/\s+$/, '');
+      break;
+    }
+  }
+  return label + colon;
+}
+
+/** The income stat's label: the noun only, with the unit left to the value. */
+function incomeLabelText() {
+  return stripPerSecond(t('hud.income'));
+}
+
+/**
+ * HUD-only money formatter. fmtMoney() is already compact above 1000
+ * ("1.23K"), but below it it can emit six characters of precision the top bar
+ * has no room for on a 411px phone ("477.62" next to a long Hebrew label, see
+ * the HUD-overflow finding). Nothing here is a balance decision — the value
+ * shown is the same number, just rounded to what a stat chip can hold:
+ *   < 100   one decimal   ("47.6")
+ *   < 1000  whole units   ("477")
+ *   >= 1000 fmtMoney      ("1.23K")
+ * Longest possible output is 5 characters, in every locale.
+ */
+function fmtMoneyCompact(n) {
+  const num = safeNumber(Number(n), 0);
+  const abs = Math.abs(num);
+  if (abs < 100) {
+    const text = Number.isInteger(num) ? String(num) : num.toFixed(1);
+    return text;
+  }
+  if (abs < 1000) return String(Math.trunc(num));
+  return fmtMoney(num);
 }
 
 /** Build one "label: value" HUD stat block. */
@@ -182,6 +247,8 @@ function overlayHost(root) {
 
 export function mount(root) {
   if (!root || typeof root.appendChild !== 'function') return;
+  if (mounted) return;
+  mounted = true;
 
   const bar = el('div', 'hud-bar');
   bar.setAttribute('dir', dir());
@@ -191,7 +258,7 @@ export function mount(root) {
   worldBlock.appendChild(worldName);
 
   const money = buildStat('hud-money', t('hud.money'));
-  const income = buildStat('hud-income', t('hud.income'));
+  const income = buildStat('hud-income', incomeLabelText());
   const diamonds = buildStat('hud-diamonds', t('hud.diamonds'));
   const guests = buildStat('hud-guests', t('hud.guests'));
 
@@ -302,7 +369,7 @@ function applyStaticLabels() {
     if (els.bar) els.bar.setAttribute('dir', dir());
     if (els.zoomControls) els.zoomControls.setAttribute('dir', dir());
     if (els.moneyLabel) els.moneyLabel.textContent = t('hud.money');
-    if (els.incomeLabel) els.incomeLabel.textContent = t('hud.income');
+    if (els.incomeLabel) els.incomeLabel.textContent = incomeLabelText();
     if (els.diamondsLabel) els.diamondsLabel.textContent = t('hud.diamonds');
     if (els.guestsLabel) els.guestsLabel.textContent = t('hud.guests');
     if (els.zoomInBtn) {
@@ -423,7 +490,7 @@ export function update() {
   els.worldName.textContent = resolveWorldName(def);
 
   try {
-    els.money.textContent = fmtMoney(safeNumber(w.money, 0));
+    els.money.textContent = fmtMoneyCompact(safeNumber(w.money, 0));
   } catch (err) {
     els.money.textContent = String(Math.floor(safeNumber(w.money, 0)));
   }
@@ -435,7 +502,7 @@ export function update() {
     perSec = 0;
   }
   try {
-    els.income.textContent = fmtMoney(safeNumber(perSec, 0)) + t('unit.perSecond');
+    els.income.textContent = fmtMoneyCompact(safeNumber(perSec, 0)) + t('unit.perSecond');
   } catch (err) {
     els.income.textContent = '0' + t('unit.perSecond');
   }
@@ -446,7 +513,17 @@ export function update() {
   els.guests.textContent = String(Math.max(0, Math.floor(liveGuestCount)));
 
   const progress = computeTierProgress(w);
-  els.tierBadge.textContent = progress.name ? t('hud.tier') + ' ' + progress.name : '—';
+  /*
+   * The badge carries the tier NAME only. Prefixing it with t('hud.tier')
+   * ("Tier" / "דרגה") made the longest string in the bar — "Tier Rundown
+   * Joint" / "דרגה מתחם מוזנח" — long enough to overlap the neighbouring stat
+   * on a 411px phone, and the word is redundant next to the progress bar it
+   * labels. The full phrase stays reachable as the title/aria-label.
+   */
+  els.tierBadge.textContent = progress.name || '—';
+  const tierFull = progress.name ? t('hud.tier') + ' ' + progress.name : '';
+  els.tierBadge.title = tierFull;
+  if (tierFull) els.tierBadge.setAttribute('aria-label', tierFull);
   els.tierFill.style.width = Math.round(progress.pct * 100) + '%';
   els.tierFill.classList.toggle('is-max', progress.isMax === true);
 }

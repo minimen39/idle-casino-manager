@@ -69,6 +69,31 @@ let x10LabelEl = null;
 const DRAWER_MOBILE_QUERY = '(max-width: 640px), (max-height: 480px)';
 /** Minimum vertical pointer travel (px) on the handle to count as a swipe. */
 const DRAWER_SWIPE_THRESHOLD = 40;
+/**
+ * How long after a pointer gesture the handle ignores a `click`.
+ *
+ * The handle resolves EVERY pointer gesture on pointerup (see
+ * buildDrawerHandle()), so the synthesised click that trails a touch tap is a
+ * duplicate and has to be swallowed. A timestamp rather than a boolean flag on
+ * purpose: a flag that is only cleared by the next pointerdown stays armed
+ * forever whenever no click follows — which on touch is the common case — and
+ * would then eat the first non-pointer activation (a programmatic .click(), an
+ * assistive-tech activation) that came along. This expires by itself.
+ * Comfortably longer than Chrome's touch->click latency on a mobile-optimised
+ * page (no 300ms tap delay, so single-digit ms), short enough that a deliberate
+ * second tap is never mistaken for a trailing click.
+ */
+const DRAWER_CLICK_SUPPRESS_MS = 700;
+
+/**
+ * Where the player's own expand/collapse choice is remembered. Persisted
+ * straight to localStorage rather than through state.js, exactly like
+ * monetization.js's ad cooldown: state.js's migrate() whitelists only known
+ * gameplay fields and would silently drop a new UI-preference key on reload.
+ * This is a view preference, not save data — a corrupt/missing value just
+ * falls back to the breakpoint default.
+ */
+const DRAWER_PREF_KEY = 'idleCasino.ui.drawerCollapsed';
 
 /** @type {null | HTMLElement} panel root (`.build-panel`), target of .is-collapsed/.is-expanded */
 let panelRootEl = null;
@@ -80,6 +105,12 @@ let drawerCollapsed = false;
 let drawerUserChose = false;
 /** @type {null | MediaQueryList} */
 let drawerMql = null;
+/** Removes the MediaQueryList 'change' listener; see setupDrawerResponsiveness(). */
+let drawerMqlOff = null;
+/** Last measured height (px) of the strip that stays on screen when collapsed. */
+let drawerCollapsedH = 0;
+/** collapsedHeight of the last 'drawer:changed' actually put on the bus, or -1. */
+let announcedCollapsedH = -1;
 
 /** key -> { def, kind, ownedEl, costEl, buyBtn } for the currently rendered tab. */
 let rowMeta = new Map();
@@ -242,6 +273,110 @@ function syncTabButtons() {
   });
 }
 
+/** localStorage access that can never throw (private mode, disabled storage). */
+function storageSafe(fn, fallback) {
+  try {
+    return fn();
+  } catch (err) {
+    return fallback;
+  }
+}
+
+/** The remembered choice, or null when the player has never made one. */
+function readDrawerPref() {
+  const raw = storageSafe(() => {
+    if (typeof localStorage === 'undefined') return null;
+    return localStorage.getItem(DRAWER_PREF_KEY);
+  }, null);
+  if (raw === '1') return true;
+  if (raw === '0') return false;
+  return null;
+}
+
+function writeDrawerPref(collapsed) {
+  storageSafe(() => {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(DRAWER_PREF_KEY, collapsed ? '1' : '0');
+  });
+}
+
+/**
+ * Height (px) of the strip that remains on screen when the sheet is collapsed.
+ * main.js needs it to keep that band out of the camera's view rectangle (C2),
+ * so it must be a real measurement, never a hardcoded constant. In order:
+ *   1. styles.css's own `--drawer-collapsed-h` token, when it resolves to a
+ *      plain px length (a `calc()`/`env()` token comes back unresolved and is
+ *      rejected). It is authoritative in BOTH states and costs nothing.
+ *   2. While collapsed: the part of the sheet still inside the viewport. NOT
+ *      the panel's box height — verified on device, the sheet collapses with
+ *      `transform: translateY(...)`, so its rect stays a full 62dvh (471px)
+ *      while only 78px is on screen. Measuring the box reported 471 and would
+ *      have had main.js inset the camera by six times the real strip.
+ *   3. The handle + header, which is what the sheet collapses down to.
+ *   4. The last value we managed to measure.
+ * Never throws; worst case it returns 0 and main.js falls back to its own
+ * getBoundingClientRect() measurement.
+ */
+function measureDrawerCollapsedHeight() {
+  try {
+    if (!panelRootEl || typeof panelRootEl.getBoundingClientRect !== 'function') return drawerCollapsedH;
+
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      const token = String(window.getComputedStyle(panelRootEl).getPropertyValue('--drawer-collapsed-h') || '').trim();
+      if (/^\d+(\.\d+)?px$/.test(token)) {
+        const px = Math.round(parseFloat(token));
+        if (px > 0) {
+          drawerCollapsedH = px;
+          return drawerCollapsedH;
+        }
+      }
+    }
+
+    if (drawerCollapsed) {
+      const rect = panelRootEl.getBoundingClientRect();
+      const viewportH =
+        typeof window !== 'undefined' && Number.isFinite(window.innerHeight) ? window.innerHeight : 0;
+      const visible = viewportH > 0 ? Math.min(rect.height, Math.max(0, viewportH - rect.top)) : rect.height;
+      const h = Math.round(visible);
+      if (h > 0) drawerCollapsedH = h;
+      return drawerCollapsedH;
+    }
+
+    let sum = 0;
+    if (drawerHandleEl && typeof drawerHandleEl.getBoundingClientRect === 'function') {
+      sum += drawerHandleEl.getBoundingClientRect().height;
+    }
+    if (tabBarEl && tabBarEl.parentNode && typeof tabBarEl.parentNode.getBoundingClientRect === 'function') {
+      sum += tabBarEl.parentNode.getBoundingClientRect().height;
+    }
+    const measured = Math.round(sum);
+    if (measured > 0) drawerCollapsedH = measured;
+  } catch (err) {
+    // guarded: a detached element must never break the drawer
+  }
+  return drawerCollapsedH;
+}
+
+/**
+ * Contract C3: announce the sheet's state so main.js can recompute the
+ * camera's view insets (C2). Emitted on every state change, once at mount for
+ * the initial state, and again once the CSS transition has settled — the
+ * height measured the instant the class flips is mid-animation and would leave
+ * the camera framed against a box that no longer exists.
+ */
+function emitDrawerChanged() {
+  try {
+    const collapsedHeight = measureDrawerCollapsedHeight();
+    announcedCollapsedH = collapsedHeight;
+    bus.emit('drawer:changed', {
+      expanded: !drawerCollapsed,
+      collapsedHeight
+    });
+  } catch (err) {
+    // a listener blowing up must never break the drawer's own state machine
+  }
+}
+
 /** Applies drawerCollapsed to the DOM (classes + aria-expanded). Safe to call anytime. */
 function applyDrawerCollapseState() {
   try {
@@ -251,6 +386,7 @@ function applyDrawerCollapseState() {
     }
     if (drawerHandleEl) {
       drawerHandleEl.setAttribute('aria-expanded', drawerCollapsed ? 'false' : 'true');
+      drawerHandleEl.setAttribute('aria-label', t('panel.drawerToggle'));
     }
   } catch (err) {
     // guarded: a detached/missing element must never throw here
@@ -261,12 +397,18 @@ function applyDrawerCollapseState() {
  * Sets the drawer's collapsed state.
  * @param {boolean} next
  * @param {boolean} isUserChoice - true when triggered by a tap/swipe/tab-select,
- *   which permanently opts this session out of the media-query auto behaviour.
+ *   which permanently opts this session out of the media-query auto behaviour
+ *   AND is remembered across reloads.
  */
 function setDrawerCollapsed(next, isUserChoice) {
+  const changed = drawerCollapsed !== !!next;
   drawerCollapsed = !!next;
-  if (isUserChoice) drawerUserChose = true;
+  if (isUserChoice) {
+    drawerUserChose = true;
+    writeDrawerPref(drawerCollapsed);
+  }
   applyDrawerCollapseState();
+  if (changed) emitDrawerChanged();
 }
 
 /** Expands the drawer if it is currently collapsed (used by tab selection). */
@@ -286,7 +428,8 @@ function buildDrawerHandle() {
   }
 
   let dragStartY = null;
-  let dragHandled = false;
+  /** Date.now() of the last gesture this handle resolved from pointer events. */
+  let pointerResolvedAt = 0;
 
   const stop = (e) => {
     try {
@@ -299,7 +442,16 @@ function buildDrawerHandle() {
   handle.addEventListener('pointerdown', (e) => {
     stop(e);
     dragStartY = typeof e.clientY === 'number' ? e.clientY : null;
-    dragHandled = false;
+    // Capture the pointer so a swipe that drifts off this narrow strip still
+    // delivers its pointerup here. Without it the gesture is left dangling
+    // (dragStartY never cleared) and the sheet neither opens nor closes.
+    try {
+      if (e.pointerId !== undefined && typeof handle.setPointerCapture === 'function') {
+        handle.setPointerCapture(e.pointerId);
+      }
+    } catch (err) {
+      // guarded: pointer capture is an optimisation, never a requirement
+    }
   });
 
   handle.addEventListener('pointermove', (e) => {
@@ -308,17 +460,43 @@ function buildDrawerHandle() {
   });
 
   handle.addEventListener('pointerup', (e) => {
+    try {
+      if (e.pointerId !== undefined && typeof handle.releasePointerCapture === 'function') {
+        handle.releasePointerCapture(e.pointerId);
+      }
+    } catch (err) {
+      // guarded
+    }
     if (dragStartY === null) return;
     stop(e);
     const endY = typeof e.clientY === 'number' ? e.clientY : dragStartY;
     const dy = endY - dragStartY;
     dragStartY = null;
+    /*
+     * Resolve the WHOLE gesture here, taps included — this used to fall through
+     * to the click handler for anything under DRAWER_SWIPE_THRESHOLD, and that
+     * left a dead zone that matches the "one drawer-handle tap silently did
+     * nothing, intermittent" report exactly:
+     *
+     *   Chrome's tap recogniser cancels the synthesised click once the finger
+     *   drifts past its touch slop (~8 CSS px on Android). Between that slop
+     *   and the 40px swipe threshold there was therefore NO activation path at
+     *   all: too far for a click, not far enough for a swipe. A slightly
+     *   sloppy thumb tap — 10-35px of drift, entirely normal on a 30px-tall
+     *   strip — did nothing at all, and did it silently. `touch-action: none`
+     *   on .drawer-handle stops the browser stealing the gesture as a scroll
+     *   but does not stop the tap being cancelled.
+     *
+     * Resolving on pointerup closes the zone: any pointer sequence that began
+     * on the handle now toggles or swipes, whatever the drift.
+     */
+    pointerResolvedAt = Date.now();
     if (dy <= -DRAWER_SWIPE_THRESHOLD) {
-      dragHandled = true;
       setDrawerCollapsed(false, true); // swipe up -> expand
     } else if (dy >= DRAWER_SWIPE_THRESHOLD) {
-      dragHandled = true;
       setDrawerCollapsed(true, true); // swipe down -> collapse
+    } else {
+      setDrawerCollapsed(!drawerCollapsed, true); // tap (however sloppy) -> toggle
     }
   });
 
@@ -327,13 +505,15 @@ function buildDrawerHandle() {
     dragStartY = null;
   });
 
+  /*
+   * Fallback activation only. Every pointer-driven gesture is already resolved
+   * on pointerup above, so the click that trails it is a duplicate; this exists
+   * for the paths that produce a click with no pointer sequence of our own
+   * (a programmatic .click(), assistive tech, a browser without Pointer Events).
+   */
   handle.addEventListener('click', (e) => {
     stop(e);
-    if (dragHandled) {
-      // The gesture was already resolved as a swipe; ignore the trailing click.
-      dragHandled = false;
-      return;
-    }
+    if (Date.now() - pointerResolvedAt < DRAWER_CLICK_SUPPRESS_MS) return;
     setDrawerCollapsed(!drawerCollapsed, true);
   });
 
@@ -363,7 +543,16 @@ function setupDrawerResponsiveness() {
     drawerMql = null;
   }
 
-  setDrawerCollapsed(!!(drawerMql && drawerMql.matches), false);
+  // A remembered choice wins over the breakpoint default and, like an in-session
+  // choice, opts out of the media-query auto behaviour — a player who collapsed
+  // the sheet to see the floor should not find it reopened on every launch.
+  const pref = readDrawerPref();
+  if (pref !== null) {
+    drawerUserChose = true;
+    setDrawerCollapsed(pref, false);
+  } else {
+    setDrawerCollapsed(!!(drawerMql && drawerMql.matches), false);
+  }
 
   if (!drawerMql) return;
 
@@ -381,9 +570,26 @@ function setupDrawerResponsiveness() {
   try {
     if (typeof drawerMql.addEventListener === 'function') {
       drawerMql.addEventListener('change', onChange);
+      // Remembering how to detach keeps a second mount() from stacking
+      // listeners on the same MediaQueryList (each one re-collapsing the
+      // sheet on every rotation).
+      drawerMqlOff = () => {
+        try {
+          drawerMql.removeEventListener('change', onChange);
+        } catch (err) {
+          /* guarded */
+        }
+      };
     } else if (typeof drawerMql.addListener === 'function') {
       // Safari/older WebView fallback; not expected on the Chrome/Android target.
       drawerMql.addListener(onChange);
+      drawerMqlOff = () => {
+        try {
+          drawerMql.removeListener(onChange);
+        } catch (err) {
+          /* guarded */
+        }
+      };
     }
   } catch (err) {
     // guarded: no-op if the MediaQueryList doesn't support change wiring
@@ -440,8 +646,48 @@ function buildX10Toggle() {
   return label;
 }
 
+/**
+ * Detach everything a previous mount() wired up. Idempotent, and safe to call
+ * before the first mount. Without it a second mount() would stack a second set
+ * of bus subscriptions (every purchase recomputing the rows twice), a second
+ * MediaQueryList listener, and leave the old .build-panel orphaned in the DOM
+ * on top of the new one.
+ */
+function teardown() {
+  for (const off of unsubscribers) {
+    try {
+      if (typeof off === 'function') off();
+    } catch (err) {
+      // guarded: one bad unsubscribe must not skip the rest
+    }
+  }
+  unsubscribers = [];
+
+  if (typeof drawerMqlOff === 'function') {
+    drawerMqlOff();
+    drawerMqlOff = null;
+  }
+  drawerMql = null;
+
+  try {
+    if (panelRootEl && panelRootEl.parentNode) panelRootEl.parentNode.removeChild(panelRootEl);
+  } catch (err) {
+    // guarded
+  }
+  panelRootEl = null;
+  drawerHandleEl = null;
+  tabBarEl = null;
+  rowsContainer = null;
+  x10LabelEl = null;
+  rowMeta = new Map();
+  // The next mount() re-announces from scratch; leaving the old height latched
+  // would let its resize guard suppress the first post-remount announcement.
+  announcedCollapsedH = -1;
+}
+
 export function mount(root) {
   if (!root || typeof root.appendChild !== 'function') return;
+  teardown();
 
   const panel = el('div', 'build-panel');
   panel.setAttribute('dir', dir());
@@ -462,6 +708,88 @@ export function mount(root) {
 
   renderActiveTab();
   setupDrawerResponsiveness();
+
+  /*
+   * The sheet animates between its two heights, so the box measured the
+   * instant the class flips is mid-transition. Re-announce once the animation
+   * has actually landed (C3), so main.js's camera insets settle on the real
+   * geometry. Filtered to the panel's own transitions — a child button's
+   * :active transform must not trigger a re-measure storm.
+   */
+  panel.addEventListener('transitionend', (e) => {
+    if (!e || e.target !== panel) return;
+    const prop = String(e.propertyName || '');
+    if (prop && prop.indexOf('height') === -1 && prop.indexOf('transform') === -1) return;
+    emitDrawerChanged();
+  });
+
+  /*
+   * Contract C3: main.js needs the INITIAL geometry too, not only changes.
+   *
+   * Three emits, and all three earn their place. setupDrawerResponsiveness()
+   * above only emits when the state actually CHANGED, so on a desktop width or
+   * a remembered "expanded" preference (both of which leave the module's
+   * initial `drawerCollapsed = false` untouched) it emits nothing at all — the
+   * first of these is the only announcement of the initial state.
+   *
+   *   1. now — synchronous, so a listener registered BEFORE us is informed.
+   *      main.js is not one: boot() mounts panels at :2156 and only subscribes
+   *      to 'drawer:changed' at :2186, so it provably misses this one. Kept
+   *      because that ordering is main.js's to change, not ours to depend on.
+   *   2. next frame — the freshly-appended sheet has now been laid out, so
+   *      getBoundingClientRect() returns something other than 0. This is the
+   *      emit main.js actually receives today.
+   *   3. next task — because (2) does not exist when the document is hidden:
+   *      requestAnimationFrame callbacks do not run in a background tab, and a
+   *      PWA can absolutely be launched straight into one. Without this, such a
+   *      session would run with camera insets that never saw a collapsed
+   *      height until the player first touched the handle.
+   */
+  emitDrawerChanged();
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => emitDrawerChanged());
+  }
+  if (typeof setTimeout === 'function') {
+    setTimeout(() => emitDrawerChanged(), 0);
+  }
+
+  /*
+   * ...and the collapsed strip can also change height with NO state change at
+   * all: --drawer-collapsed-h is retuned 78px -> 68px by the max-height:480px
+   * block in styles.css, so rotating the phone resizes the strip while
+   * `expanded` stays put. Nothing else announces that — the MediaQueryList in
+   * setupDrawerResponsiveness() only fires when its match state FLIPS, and
+   * 411x760 and 760x411 both match DRAWER_MOBILE_QUERY — so main.js's camera
+   * insets (C2) would keep framing against the pre-rotation strip until the
+   * player next toggled the sheet. Guarded on the measured height, so Chrome's
+   * URL-bar show/hide resize storm stays silent.
+   */
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    const announceIfHeightChanged = () => {
+      try {
+        if (measureDrawerCollapsedHeight() === announcedCollapsedH) return;
+        emitDrawerChanged();
+      } catch (err) {
+        // guarded: a resize must never break the drawer
+      }
+    };
+    // orientationchange can fire before the new media query has been applied,
+    // so re-check on the following frame as well as immediately.
+    const onViewportChange = () => {
+      announceIfHeightChanged();
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(announceIfHeightChanged);
+      }
+    };
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('orientationchange', onViewportChange);
+    // teardown() calls every entry here as a plain function, so an ordinary
+    // remover slots straight in alongside the bus unsubscribers.
+    unsubscribers.push(() => {
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('orientationchange', onViewportChange);
+    });
+  }
 
   unsubscribers.push(bus.on('purchase', () => update()));
   unsubscribers.push(bus.on('ui:refresh', () => update()));

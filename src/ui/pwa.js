@@ -19,10 +19,20 @@
  * resolve to the domain root and 404. The same code works on localhost.
  *
  * i18n: every visible string routes through core/i18n.js's t(), and re-renders
- * on 'locale:changed' (see mount()'s onLocaleChanged subscription). One gap:
- * there is no locale key for the update bar's transient "updating…" busy state
- * (setUpdateBarBusy) — it borrows 'hud.loading' ("Loading…"/"טוען…") as the
- * closest existing string. A dedicated 'pwa.updating' key would read better.
+ * on 'locale:changed' (see mount()'s onLocaleChanged subscription). The update
+ * bar's transient busy state used to borrow 'hud.loading' ("Loading…"/"טוען…"),
+ * which is the wrong sentence in both languages — the app is not loading, it is
+ * applying an update — and now uses its own 'pwa.updating' key.
+ *
+ * Updates: the bar is raised by two independent signals. (1) A new service
+ * worker finished installing and is waiting (updatefound -> statechange), the
+ * classic path. (2) sw.js's background revalidate noticed that a precached
+ * asset on the server no longer matches the bytes this page is running and
+ * posted { type: 'ASSET_UPDATED' } — the case where a deploy touched only
+ * src/** and never changed sw.js, which used to be invisible for a whole
+ * session. Both end in the same honest prompt, and in case (2) applyUpdate()'s
+ * "nothing waiting" branch does a plain reload, which is exactly what is
+ * needed: the fresh bytes are already in the cache by then.
  */
 
 import { bus } from '../core/events.js';
@@ -64,6 +74,9 @@ let refreshRequested = false;
 
 /** Latch so a single controllerchange can never reload twice. */
 let reloading = false;
+
+/** Latch so a sweep reporting five changed files raises exactly one bar. */
+let assetUpdateAnnounced = false;
 
 let mounted = false;
 let stylesInjected = false;
@@ -451,10 +464,11 @@ function setUpdateBarBusy(busy) {
   if (!updateBar) return;
   if (updateBarRefreshBtn) {
     updateBarRefreshBtn.disabled = !!busy;
-    // No dedicated "updating…" locale key exists yet (closest is hud.loading,
-    // a generic "Loading…"/"טוען…" — see the integrator note in this module's
-    // header comment); reusing it beats leaving the busy state untranslated.
-    updateBarRefreshBtn.textContent = busy ? t('hud.loading') : t('pwa.refresh');
+    // 'pwa.updating' ("Updating…" / "מעדכן…"), not the generic 'hud.loading'
+    // ("Loading…" / "טוען…"): nothing is loading here, the pending version is
+    // being applied, and the Hebrew "טוען…" on a Refresh button reads like the
+    // game is booting rather than updating.
+    updateBarRefreshBtn.textContent = busy ? t('pwa.updating') : t('pwa.refresh');
   }
   if (updateBarDismissBtn) updateBarDismissBtn.disabled = !!busy;
   if (updateBar) updateBar.classList.toggle('is-updating', !!busy);
@@ -518,6 +532,21 @@ function showInstallHelpBar() {
 
 function hideInstallHelpBar() {
   if (installHelpBar) installHelpBar.classList.remove('is-visible');
+}
+
+/**
+ * sw.js reported that a precached asset changed on the server while this page
+ * is running the previous bytes (message ASSET_UPDATED). There is no waiting
+ * worker in this case — applyUpdate()'s fallback branch does a plain reload,
+ * which is enough because the fresh bytes are already in the cache. Announced
+ * once per page load: the sweep can report several files, and one bar is the
+ * honest summary of "there is a newer version, tap Refresh".
+ */
+function announceAssetUpdate() {
+  if (assetUpdateAnnounced) return;
+  assetUpdateAnnounced = true;
+  busToast(t('pwa.updateToast'), 'info');
+  showUpdateBar();
 }
 
 /** A new worker finished installing while an old one is still in control. */
@@ -651,17 +680,42 @@ function registerSW() {
       doReload();
     })
   );
+
+  // The second update signal (see this module's header): the worker itself is
+  // unchanged, but the assets it is serving from cache are stale.
+  safe(() =>
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      const data = event ? event.data : null;
+      const type = typeof data === 'string' ? data : data && data.type;
+      if (type === 'ASSET_UPDATED') announceAssetUpdate();
+    })
+  );
 }
 
-/** Ask the browser to re-check sw.js. Cheap, throttled, and failure-tolerant. */
+/** Ask the browser to re-check sw.js AND the precached shell. Cheap, throttled,
+ *  and failure-tolerant. */
 function pollForUpdate() {
-  if (!registration || typeof registration.update !== 'function') return;
   const now = Date.now();
   if (now - lastVersionPoll < VERSION_POLL_MS) return;
   lastVersionPoll = now;
+
+  // (1) Has sw.js's own body changed? Only finds deploys that touched it.
+  if (registration && typeof registration.update === 'function') {
+    safe(() => {
+      const p = registration.update();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    });
+  }
+
+  // (2) Have the precached assets changed? A deploy that only touches src/**
+  // never changes sw.js, so (1) reports nothing and the running page would
+  // stay on the old code until its next cold launch. The worker answers with
+  // an ASSET_UPDATED message if anything really moved.
   safe(() => {
-    const p = registration.update();
-    if (p && typeof p.catch === 'function') p.catch(() => {});
+    const controller = navigator.serviceWorker && navigator.serviceWorker.controller;
+    if (controller && typeof controller.postMessage === 'function') {
+      controller.postMessage({ type: 'CHECK_UPDATES' });
+    }
   });
 }
 

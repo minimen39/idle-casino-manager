@@ -105,6 +105,25 @@ export function createState() {
       roulette: 0,
       blackjack: 0
     },
+    /**
+     * First-run guide (contract C6). A brand-new save has NOT seen it; only
+     * migrate() back-fills `seen: true`, because an existing player already
+     * knows the game and must never be ambushed by a walkthrough.
+     */
+    tutorial: { seen: false, step: 0 },
+    /**
+     * Away time shorter than CONFIG.offline.minSeconds, carried forward in
+     * seconds instead of being thrown away. Phone players app-switch for
+     * 30-40 s at a time; without this every one of those round trips leaked
+     * its earnings. grantOffline() owns it.
+     */
+    offlineDebt: 0,
+    /**
+     * Namespaced bag for keys owned by other modules (monetization cooldowns,
+     * ...). migrate() round-trips it verbatim, so a module can persist its own
+     * state without having to edit this file's whitelist. Keep it JSON-safe.
+     */
+    ext: {},
     worlds: WORLDS.map((def) => createWorldState(def))
   };
 }
@@ -171,6 +190,62 @@ function migrateBoost(raw) {
 }
 
 /**
+ * First-run guide block (contract C6).
+ *
+ * A save that has no `tutorial` block predates the feature, which means it
+ * belongs to somebody who has already played — back-fill `seen: true` so the
+ * guide does not ambush them. Only createState() (a genuinely new game) hands
+ * out `seen: false`.
+ */
+function migrateTutorial(raw) {
+  if (!raw || typeof raw !== 'object') return { seen: true, step: 0 };
+  return {
+    seen: raw.seen === true,
+    step: Math.floor(nonNegative(raw.step, 0))
+  };
+}
+
+/**
+ * Every top-level key migrate() knowingly round-trips. Anything on a persisted
+ * blob outside this set is DROPPED — that is deliberate (it is what keeps a
+ * tampered/ancient save from poisoning the runtime), but it used to be silent,
+ * which is how monetization.js ended up parking its cooldowns in private
+ * localStorage keys instead of the save. `ext` now exists precisely so modules
+ * have a supported place to persist their own keys, and the drop is announced.
+ */
+const KNOWN_STATE_KEYS = [
+  'version',
+  'diamonds',
+  'noAds',
+  'activeWorld',
+  'lastSeen',
+  'boosts',
+  'cooldowns',
+  'tutorial',
+  'offlineDebt',
+  'ext',
+  'worlds'
+];
+
+/** Announce (once per load) any persisted key migrate() is about to discard. */
+function warnDroppedKeys(raw) {
+  let dropped = null;
+  for (const key of Object.keys(raw)) {
+    if (KNOWN_STATE_KEYS.indexOf(key) !== -1) continue;
+    if (!dropped) dropped = [];
+    dropped.push(key);
+  }
+  if (!dropped) return;
+  if (typeof console !== 'undefined' && console.warn) {
+    console.warn(
+      '[state] migrate() dropped unknown persisted key(s): ' +
+        dropped.join(', ') +
+        ' — persist module-owned data under state.ext instead.'
+    );
+  }
+}
+
+/**
  * Bring any persisted payload up to the current schema.
  * Unknown/older versions are handled by simply filling in defaults.
  * @param {any} raw
@@ -179,6 +254,8 @@ function migrateBoost(raw) {
 export function migrate(raw) {
   const fresh = createState();
   if (!raw || typeof raw !== 'object') return fresh;
+
+  warnDroppedKeys(raw);
 
   const worlds = Array.isArray(raw.worlds) ? raw.worlds : [];
   const out = {
@@ -195,6 +272,11 @@ export function migrate(raw) {
       roulette: nonNegative(raw.cooldowns && raw.cooldowns.roulette, 0),
       blackjack: nonNegative(raw.cooldowns && raw.cooldowns.blackjack, 0)
     },
+    tutorial: migrateTutorial(raw.tutorial),
+    offlineDebt: nonNegative(raw.offlineDebt, 0),
+    // Forward-compatible passthrough: a future/other module's namespaced keys
+    // survive a load instead of being silently erased.
+    ext: raw.ext && typeof raw.ext === 'object' && !Array.isArray(raw.ext) ? raw.ext : {},
     worlds: WORLDS.map((def, i) => migrateWorld(worlds[i], def))
   };
 
@@ -374,6 +456,45 @@ export function boostMult(kind) {
   return boostActive(kind) ? state.boosts[kind].mult : 1;
 }
 
+/**
+ * THE single writer for a timed boost. Everything that hands the player one
+ * (rewarded ad, diamond mega-boost, minigame prize, escorted-VIP live event)
+ * must call this instead of assigning `state.boosts[kind].mult/.until`.
+ *
+ * ONE policy — a running boost may only ever get better:
+ *   - incoming multiplier weaker than the running one -> nothing changes.
+ *   - otherwise -> take the incoming multiplier and APPEND its duration to the
+ *     end of the current window (so nothing already granted is lost).
+ *
+ * The first rule is the whole reason this exists: with three modules writing
+ * the field directly, watching a free 2x/180 s rewarded ad overwrote a running
+ * 40-diamond 5x/10 min mega-boost, i.e. a free reward strictly punished the
+ * player who had just paid.
+ *
+ * @param {'income'|'dealer'} kind
+ * @param {number} mult
+ * @param {number} seconds
+ * @returns {boolean} true when the boost was actually written
+ */
+export function applyBoost(kind, mult, seconds) {
+  const b = state.boosts && state.boosts[kind];
+  if (!b) return false;
+
+  const m = num(mult, 1);
+  const s = num(seconds, 0);
+  if (!(m > 1) || !(s > 0)) return false;
+
+  const now = Date.now();
+  const until = num(b.until, 0);
+  const active = until > now && num(b.mult, 1) > 1;
+
+  if (active && num(b.mult, 1) > m) return false; // never downgrade
+
+  b.mult = m;
+  b.until = (active ? until : now) + s * 1000;
+  return true;
+}
+
 /* ------------------------------------------------------------------ *
  *  Offline progression
  * ------------------------------------------------------------------ */
@@ -391,15 +512,25 @@ export function grantOffline() {
   const capSeconds = Math.max(0, CONFIG.offline.capHours * 3600);
   let seconds = (now - last) / 1000;
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
-  seconds = Math.min(seconds, capSeconds);
+
+  // Fold in whatever previous trips were too short to pay out. On a phone the
+  // normal pattern is a 30-40 s app switch, which is under minSeconds; banking
+  // the remainder instead of discarding it is the difference between "several
+  // short switches eventually pay" and "they never pay a single second".
+  // NOTE: lastSeen is unusable as the bank — every autosave (writeNow) pins it
+  // to Date.now() while the game runs — hence a field of its own.
+  seconds = Math.min(seconds + nonNegative(state.offlineDebt, 0), capSeconds);
 
   const result = { seconds, earnedPerWorld: [], total: 0 };
   state.lastSeen = now;
 
   if (seconds < CONFIG.offline.minSeconds) {
+    // Carry it forward rather than losing it; do NOT pay out yet.
+    state.offlineDebt = seconds;
     result.seconds = seconds;
     return result;
   }
+  state.offlineDebt = 0;
 
   const rate = CONFIG.offline.rate;
   const list = Array.isArray(state.worlds) ? state.worlds : [];

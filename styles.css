@@ -60,10 +60,108 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
 
-  /* Collapsed height of the mobile build drawer (bottom sheet): grab
-   * handle + tab strip only. Shrunk further for short landscape phones —
-   * see the max-height:480px block near the end of this file. */
-  --drawer-collapsed-h: 64px;
+  /* Collapsed height of the mobile build drawer (bottom sheet): border-top +
+   * grab handle + tab strip. This is measured, not guessed: 4px border +
+   * 30px .drawer-handle + 44px .build-panel-header. It used to be 64px while
+   * its own content needed 68px, which silently clipped the active tab's gold
+   * underline. Shrunk for short landscape phones — see the max-height:480px
+   * block near the end of this file, which retunes all three parts together. */
+  --drawer-collapsed-h: 78px;
+
+  /* Height of the top HUD bar, EXCLUDING --safe-top (which is added wherever
+   * this is consumed). The action dock and the camera-inset math both pin
+   * themselves under the HUD; before this existed they each repeated a
+   * hardcoded 52px/40px that drifted out of sync with .hud's real height. */
+  --hud-h: 60px;
+
+  /* Type scale. Every step is a clamp() so text shrinks on a 360px phone and
+   * stops growing on a tablet — the sheet used to declare 15 unrelated px
+   * sizes, none of which responded to viewport width at all. */
+  --fs-xs: clamp(11px, 2.9vw, 12px);
+  --fs-sm: clamp(12px, 3.2vw, 13px);
+  --fs-md: clamp(13px, 3.6vw, 14px);
+  --fs-lg: clamp(15px, 4.2vw, 17px);
+  --fs-xl: clamp(18px, 5.2vw, 22px);
+  --fs-2xl: clamp(28px, 9vw, 44px);
+
+  /* Two weights only: regular body text and the chunky "sticker" bold. */
+  --fw-regular: 500;
+  --fw-bold: 800;
+
+  /* Font stack. Latin first (so digits/Latin keep the platform UI face),
+   * then an explicit Hebrew face: Android's `sans-serif` resolves to Roboto,
+   * which ships NO Hebrew glyphs, so without this every Hebrew string falls
+   * back per-glyph to an arbitrary system face and mixed strings render in
+   * two typefaces at two x-heights. Font matching is per-glyph, so appending
+   * the Hebrew face costs Latin nothing. */
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'Helvetica Neue', Arial, 'Noto Sans Hebrew', 'Noto Sans Hebrew UI',
+    'Arial Hebrew', sans-serif;
+
+  /* Motion — three durations and one easing curve, instead of the seven
+   * ad-hoc values the sheet used to carry. */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --ease: cubic-bezier(0.22, 0.9, 0.32, 1);
+
+  /* Softer companion to --gold-outline: the 4-direction hard outline is only
+   * needed for gold text drawn OVER the diorama. Inside an opaque panel it
+   * just smears 12px digits, so panel money uses this instead. */
+  --gold-glow: 0 1px 2px rgba(0, 0, 0, 0.55);
+
+  /* Single focus recipe, applied via :focus-visible so it never shows on tap. */
+  --focus-ring: 3px solid var(--info);
+
+  /* ----------------------------------------------------------------
+   * LAYER SCALE. Every stacking decision in this file reads from here;
+   * no rule may write a bare z-index integer again.
+   *
+   * The sheet used to carry seven ad-hoc values (2 / 80 / 90 / 100 / 200 /
+   * 250 / 300) chosen one at a time, and the result was that .hud-toast-area
+   * (300) outranked BOTH .modal-backdrop (200) and .coach-layer (250): a
+   * toast painted over an open modal and over the expanded drawer's rows,
+   * hiding controls the player was reaching for. Ordering is now stated once,
+   * in one place, so a new overlay has an obvious lane to join:
+   *
+   *   canvas  <  hud / dock / zoom  <  drawer  <  toasts  <  modals  <  coach
+   *
+   * Gaps of 100 leave room for a layer to be inserted without renumbering.
+   * ---------------------------------------------------------------- */
+  --z-canvas: 0;
+  /* Always-on chrome: the top HUD, the action dock and the zoom cluster all
+   * share one lane — they never overlap each other by construction. */
+  --z-hud: 100;
+  --z-drawer: 200;
+  --z-toast: 300;
+  /* Documented exception to the scale above. A COLLAPSED drawer is an 78px
+   * strip a toast is anchored above, so it belongs under the toasts. An
+   * EXPANDED drawer is a surface the player deliberately opened and is
+   * actively reading, and the toast lane runs straight through the middle of
+   * it — so opening the sheet promotes it past the toasts (and no further:
+   * a modal still wins). Applied via :has() in the phone block. */
+  --z-drawer-open: 350;
+  --z-modal: 400;
+  --z-coach: 500;
+
+  /* Width of the edge-fade band used as the scroll affordance on the action
+   * dock and inside modals.
+   *
+   * HARD INVARIANT: a scroller that paints this band MUST also carry padding
+   * of the same size on that edge. The band then covers only the scroller's
+   * own (empty) gutter while the content fits, and starts biting into real
+   * content exactly when something has been scrolled out of view — which is
+   * the only time a "there is more this way" cue is telling the truth. The
+   * dock previously faded its first and last pill on a row that was measured
+   * to overflow by 0px at 320/360/411px in both languages: pure damage. */
+  --fade-edge: 12px;
+
+  /* One width for every modal, so Gem Shop / How-to-Play / World Map / Offline
+   * Earnings read as one family instead of the measured 239px vs 383px on the
+   * same 411px screen. 100% resolves against .modal-backdrop's content box,
+   * which is already inset by the safe areas, so on a phone this is
+   * "full-bleed minus gutters" and on a tablet it stops at 440px. */
+  --modal-w: min(440px, 100%);
 }
 
 /* ================================================================
@@ -85,8 +183,8 @@ html, body {
   height: 100dvh;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
-  font-size: 14px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
   line-height: 1.4;
   overflow: hidden;
   user-select: none;
@@ -112,20 +210,18 @@ body {
   inset-inline-start: 0;
   width: 100%;
   /*
-   * Reserve the strip the build drawer (.panels, max-height: 40vh) occupies
-   * along the bottom edge. The renderer letterbox-fits the world into the
-   * canvas's own clientWidth/clientHeight (see Renderer#resize /
-   * Renderer#draw in src/render/renderer.js), so shrinking the canvas here
-   * keeps the whole playable floor — and its pointer hit-testing, which is
-   * derived from the same canvas's getBoundingClientRect() — inside the
-   * area that is actually clickable. Without this, world rows under the
-   * drawer (e.g. cashier/security bands, the south-wall doors) render
-   * beneath opaque, pointer-events:auto drawer content and can never be
-   * clicked. Keep in sync with .panels' max-height, including the 480px
-   * breakpoint below.
+   * CONTRACT C3: the canvas is the full viewport. It used to reserve the
+   * drawer's strip (`height: calc(100% - 40dvh)`) so world rows under the
+   * drawer could still be clicked — but that was only necessary because
+   * every overlay CONTAINER was hit-testable (the `#ui-layer > *` blanket
+   * below). With C1 in place the area under the collapsed sheet is
+   * genuinely clickable again, so the reservation is pure loss: it squeezed
+   * the diorama into the top third of the screen and left two thirds of
+   * empty gradient. The chrome now floats over a full-bleed canvas, and the
+   * renderer frames the world into the *unobstructed* rectangle via
+   * setViewInsets() (contract C2, applied from main.js).
    */
-  height: calc(100% - 40vh);
-  height: calc(100% - 40dvh);
+  height: 100%;
   display: block;
   background: linear-gradient(135deg, #241539 0%, #150c26 100%);
   /* The renderer draws smooth vector/isometric art, not pixel art — never
@@ -150,8 +246,67 @@ body {
   pointer-events: none;
 }
 
-#ui-layer > * {
+/* ----------------------------------------------------------------
+ * CONTRACT C1 — overlay hit-testing.
+ *
+ * This used to be `#ui-layer > * { pointer-events: auto }`. That single
+ * declaration was the root cause of "I can't pan or pinch the casino":
+ * with specificity (1,0,0) it beat every later attempt to make an overlay
+ * *container* transparent (`.panels { pointer-events: none }` at (0,1,0)
+ * loses; media queries add no specificity). Measured on a Pixel 10 Pro at
+ * 411x760, a 20px grid of elementFromPoint() reached #game at only 11 of
+ * 798 sample points — all of them the x=0 pixel column. The play area was
+ * effectively unreachable by touch.
+ *
+ * The rule now runs the other way round: containers stay transparent and
+ * ONLY real interactive surfaces opt back in. Everything is listed as
+ * `#ui-layer .thing` so the whole set sits at one predictable specificity
+ * (1,1,0) and nothing here can be silently out-specified by a later class
+ * rule the way the old blanket did it.
+ *
+ * DEVIATION FROM THE C1 LIST (deliberately re-derived, not an oversight):
+ * `.zoom-label` has been REMOVED from the opt-in set. hud.js builds it as a
+ * `<span>` and never attaches a listener to it (src/ui/hud.js:170 — only the
+ * three .zoom-btn elements get one), so it is a readout, not a control. Left
+ * opted in it was a 48x~22px opaque hole in the play area for no purpose; a
+ * device grid sweep found it swallowing 3 sample points. A control must be
+ * hit-testable; a number that merely reports the camera state must not be.
+ * ---------------------------------------------------------------- */
+
+#ui-layer,
+#ui-layer .action-bar,
+#ui-layer .panels,
+#ui-layer .toasts,
+#ui-layer .modals,
+#ui-layer .zoom-controls,
+#ui-layer .hud-toast-area,
+#ui-layer .coach-layer {
+  pointer-events: none;
+}
+
+/* Only real interactive surfaces opt back in. */
+#ui-layer .hud,
+#ui-layer .action-btn,
+#ui-layer .pwa-install-btn,
+#ui-layer .pwa-update-bar,
+#ui-layer .zoom-btn,
+#ui-layer .build-panel,
+#ui-layer .modal-backdrop,
+#ui-layer .modal,
+#ui-layer .coach-card,
+#ui-layer .coach-backdrop {
   pointer-events: auto;
+}
+
+/* DELIBERATE DEVIATION from the C1 list, which named `.hud-toast` as an
+ * opt-in surface: hud.js attaches no listener to a toast (showToast() only
+ * schedules a fade-out timer — src/ui/hud.js:493), so a toast is a passive
+ * announcement, not a control. Left hit-testable it would blank out a
+ * 420px-wide column over the middle of the play area for several seconds
+ * every time the game talks to you, killing pinches mid-gesture. If a toast
+ * ever becomes tap-to-dismiss, move it into the opt-in list above. */
+#ui-layer .hud-toast {
+  pointer-events: none;
 }
 
 /* ================================================================
@@ -165,10 +320,14 @@ body {
   inset-inline-end: 0;
   /* The extra safe-top room is added to the box height (not just its
    * padding) so the punch-hole camera never overlaps the money readout —
-   * padding alone would just shrink the content area inside a fixed 60px. */
-  height: calc(60px + var(--safe-top));
-  padding: calc(var(--spacing-md) + var(--safe-top)) calc(var(--spacing-md) + var(--safe-right))
-    var(--spacing-md) calc(var(--spacing-md) + var(--safe-left));
+   * padding alone would just shrink the content area inside a fixed 60px.
+   * min-height rather than height: the 44px language pill is a flex item of
+   * this row, and a hard height made it overhang the bar's bottom border and
+   * sit on top of the stats (device finding F2). Letting the bar grow to its
+   * own content is the only version that can't overlap. */
+  min-height: calc(var(--hud-h) + var(--safe-top));
+  padding: calc(var(--spacing-sm) + var(--safe-top)) calc(var(--spacing-md) + var(--safe-right))
+    var(--spacing-sm) calc(var(--spacing-md) + var(--safe-left));
   background: linear-gradient(to bottom, rgba(61, 42, 94, 0.97), rgba(28, 18, 51, 0.92));
   border-bottom: 4px solid var(--accent);
   box-shadow: var(--shadow-md);
@@ -176,26 +335,52 @@ body {
   align-items: center;
   gap: var(--spacing-lg);
   font-weight: 500;
-  z-index: 100;
+  z-index: var(--z-hud);
   backdrop-filter: blur(8px);
 }
 
 .hud-stat {
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
+  gap: var(--spacing-xs);
   white-space: nowrap;
+  /* Numbers are the payload; a stat may give up label width but never
+   * value width — see the phone block, where the labels become glyphs.
+   *
+   * ROUND 2, finding 6. `min-width: 0` used to sit here, and it is what made
+   * "HUD row overflows its lane at late-game magnitudes" survive round 1. A
+   * flex item's AUTOMATIC minimum is its min-content size, which for this
+   * `white-space: nowrap` box is the full width of the text. Writing
+   * `min-width: 0` throws that floor away, so once the row runs out of width
+   * every stat shrinks *below its own text* — and since text with no
+   * `overflow: hidden` paints outside its box while the next flex item is
+   * still positioned right after the shrunken box, the numbers land ON TOP of
+   * each other. Modelled in scratchpad/t-hud.mjs against the real formatter
+   * output (fmtMoney() tops out at "999.99Qa"): at 411px the shipped rule
+   * squeezed all four readouts under their own glyphs; with the floor back,
+   * `.hud-tier` (the ONE block designed to give width back — capped + ellipsis
+   * + its own min-width: 0) absorbs the whole 44.6px deficit and the row still
+   * fits with nothing overlapping. At 320px, where even a fully-collapsed tier
+   * is not enough, the row finally overflows into `.hud-bar`'s own
+   * `overflow-x: auto` — which is exactly what the edge fade there is
+   * advertising, and it could never actually happen while this was 0.
+   *
+   * So: no min-width declaration at all. The floor IS the fix. */
+  flex: 0 1 auto;
 }
 
 .hud-stat-value {
   color: var(--accent);
-  font-weight: 800;
-  font-size: 15px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-lg);
+  /* Tabular figures stop the whole row twitching sideways as the money
+   * ticks — with five live readouts the reflow was constant. */
+  font-variant-numeric: tabular-nums;
 }
 
 .hud-stat-label {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /* Money reads gold-with-outline everywhere it appears in the HUD, so it
@@ -229,7 +414,7 @@ body {
   backdrop-filter: blur(8px);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  z-index: 80;
+  z-index: var(--z-drawer);
 }
 
 .panel-tabs {
@@ -238,43 +423,11 @@ body {
   background: var(--panel);
 }
 
-.tab {
-  flex: 1;
-  padding: var(--spacing-md);
-  text-align: center;
-  cursor: pointer;
-  border: none;
-  background: var(--panel);
-  color: var(--text-muted);
-  font-size: 14px;
-  font-weight: 700;
-  transition: all 0.2s ease;
-  border-bottom: 4px solid transparent;
-}
-
-.tab:hover {
-  background: var(--panel-alt);
-  color: var(--text);
-}
-
-.tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-  background: var(--panel-alt);
-}
-
-.panel-content {
-  padding: var(--spacing-md);
-  display: none;
-}
-
-.panel-content.active {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: var(--spacing-md);
-  max-height: calc(40vh - 50px);
-  overflow-y: auto;
-}
+/* `.tab` / `.panel-content` used to live here. They were never rendered by
+ * anything (panels.js builds `.panel-tab-btn` + `.build-panel-rows`), and a
+ * dead duplicate of the tab strip under a second naming convention is
+ * exactly what made this sheet look like a system while behaving like
+ * patches. Deleted rather than kept in sync. */
 
 /* ================================================================
  * Cards (Buy Buttons)
@@ -293,111 +446,212 @@ body {
   box-shadow: var(--shadow-sm);
 }
 
-.card:hover:not(:disabled) {
-  background: var(--panel);
-  border-color: var(--accent);
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-md);
-}
-
-.card:disabled {
-  opacity: 0.6;
-  filter: grayscale(0.5) saturate(0.5);
-  box-shadow: none;
-  cursor: not-allowed;
+@media (hover: hover) and (pointer: fine) {
+  .card:hover:not(:disabled) {
+    background: var(--panel);
+    border-color: var(--accent);
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
+  }
 }
 
 .card-title {
   color: var(--accent);
-  font-weight: 700;
-  font-size: 13px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-sm);
 }
 
 .card-cost {
   color: var(--gold);
-  text-shadow: var(--gold-outline);
-  font-weight: 700;
-  font-size: 12px;
+  /* --gold-outline is a 4-direction 1px hard outline meant for gold text
+   * drawn over the bright diorama. At 12-13px inside an OPAQUE panel it
+   * eats the counters and the digits smear together, so panel money gets
+   * the soft glow instead. */
+  text-shadow: var(--gold-glow);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-sm);
 }
 
 .card-count {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 /* ================================================================
- * Buttons
+ * Buttons — CONTRACT C8 design system
+ *
+ * The bare `button {}` element selector used to BE the design system: it
+ * painted every button in the app as a chunky gold sticker at specificity
+ * (0,0,1), and nine component rules then each partially un-painted a
+ * different subset of it (`.panel-tab-btn:hover` literally had to write
+ * `transform: none; box-shadow: none` just to undo it). That is why nothing
+ * read as one family.
+ *
+ * Now there is exactly ONE recipe, `.btn`, parameterised by four custom
+ * properties, plus variants that only re-point those properties. The
+ * element selector survives only as a zero-specificity BRIDGE — wrapped in
+ * `:where()`, so it contributes (0,0,0) — because the JS files that
+ * construct buttons are owned by other workstreams and cannot be edited in
+ * this phase (see `handoffs`: every call site should gain `class="btn
+ * btn--primary"` etc., after which the bridge selector can be deleted
+ * outright). Because the bridge has zero specificity, any component class
+ * at (0,1,0) now wins cleanly and nothing has to un-paint anything.
  * ================================================================ */
 
 button {
+  /* True reset. Everything visual comes from .btn / the bridge below. */
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn,
+button:where(:not(.btn)) {
+  /* Variant knobs — a variant only re-points these four. */
+  --btn-bg: var(--accent);
+  --btn-fg: #2a1806;
+  --btn-border: var(--accent-dark);
+  --btn-lip: var(--accent-dark);
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
   padding: var(--spacing-sm) var(--spacing-md);
-  border: 3px solid var(--accent-dark);
+  border: 3px solid var(--btn-border);
   border-radius: var(--radius-lg);
-  font-size: 14px;
-  font-weight: 800;
+  font-family: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  line-height: 1.2;
   cursor: pointer;
-  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
-  background: var(--accent);
-  color: #2a1806;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
   white-space: nowrap;
   /* The "lip": a solid darker offset that reads as a pressable sticker. */
-  box-shadow: 0 4px 0 var(--accent-dark), 0 7px 14px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 0 var(--btn-lip), 0 7px 14px rgba(0, 0, 0, 0.35);
+  transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
-button:hover:not(:disabled) {
-  background: var(--gold);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 0 var(--accent-dark), 0 10px 18px rgba(0, 0, 0, 0.4);
+.btn--secondary,
+button.secondary {
+  --btn-bg: var(--panel-alt);
+  --btn-fg: var(--text);
+  --btn-border: var(--accent);
+  --btn-lip: var(--panel-lip);
 }
 
-button:active:not(:disabled) {
+.btn--danger,
+button.danger {
+  --btn-bg: var(--bad);
+  --btn-fg: #2a0a10;
+  --btn-border: var(--bad-dark);
+  --btn-lip: var(--bad-dark);
+}
+
+.btn--success,
+button.success {
+  --btn-bg: var(--good);
+  --btn-fg: #062f22;
+  --btn-border: var(--good-dark);
+  --btn-lip: var(--good-dark);
+}
+
+/* Ghost: chrome that must not compete with the content it sits on (tab
+ * strips, close buttons, dismiss links). No fill, no lip, no border. */
+.btn--ghost {
+  --btn-bg: transparent;
+  --btn-fg: var(--text-muted);
+  --btn-border: transparent;
+  --btn-lip: transparent;
+  box-shadow: none;
+}
+
+.btn--pill {
+  border-radius: 999px;
+}
+
+.btn--sm {
+  padding: var(--spacing-xs) var(--spacing-md);
+  font-size: var(--fs-sm);
+}
+
+/* Hover is a MOUSE affordance. Android Chrome latches :hover onto the last
+ * element you tapped and keeps it there until you tap something else, so an
+ * unguarded hover rule leaves every button the player has touched stuck in
+ * its lifted/gold state — the single most "broken-looking" symptom in the
+ * audit. The whole app is pointer:coarse, so this block simply never runs
+ * on the target device. */
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled),
+  button:where(:not(.btn)):hover:not(:disabled) {
+    filter: brightness(1.08);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 0 var(--btn-lip), 0 10px 18px rgba(0, 0, 0, 0.4);
+  }
+}
+
+/* Press feedback is therefore the PRIMARY affordance here, not a bonus. */
+.btn:active:not(:disabled),
+button:where(:not(.btn)):active:not(:disabled) {
   transform: translateY(3px);
   box-shadow: none;
 }
 
-button:disabled {
-  opacity: 0.55;
-  filter: grayscale(0.7) saturate(0.35);
-  box-shadow: none;
-  border-color: rgba(255, 255, 255, 0.15);
+/* One disabled recipe for the whole app, replacing four mutually
+ * inconsistent ones (opacity .5 / .55 / .6 with assorted grayscale filters,
+ * all of which measured between 3.4:1 and 4.3:1 — i.e. all failed). Dimming
+ * a gold sticker can never pass contrast; swapping the palette can.
+ * --text-muted (#cbb9e3) on --panel-alt (#2e1f47) measures 8.3:1. */
+.btn:disabled,
+.btn.is-disabled,
+button:disabled,
+button.is-disabled,
+.card:disabled,
+.shop-item:disabled {
+  --btn-bg: var(--panel-alt);
+  --btn-fg: var(--text-muted);
+  --btn-border: rgba(255, 255, 255, 0.14);
+  --btn-lip: transparent;
+  opacity: 1;
+  filter: none;
+  background: var(--panel-alt);
+  color: var(--text-muted);
+  border-color: rgba(255, 255, 255, 0.14);
+  /* Inset instead of a lip: "pressed in", i.e. not pressable. */
+  box-shadow: inset 0 2px 0 rgba(0, 0, 0, 0.25);
+  transform: none;
   cursor: not-allowed;
 }
 
-button.secondary {
+/* One focus recipe for every interactive control. :focus-visible (not
+ * :focus) so it appears for keyboard/switch-access users and never flashes
+ * on a touch tap. The drawer handle is a div with role=button + tabindex=0
+ * (panels.js) and had no focus style at all before this. */
+:where(button, a, select, input, textarea, [tabindex], .drawer-handle):focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ----------------------------------------------------------------
+ * Form controls. The stylesheet had no `select`/`input` rule at all, so the
+ * roulette number picker (minigames.js) dropped a native light-grey widget
+ * into a dark modal.
+ * ---------------------------------------------------------------- */
+
+select,
+input[type='text'],
+input[type='number'] {
+  min-height: 44px;
+  padding: 0 var(--spacing-sm);
   background: var(--panel-alt);
   color: var(--text);
-  border: 3px solid var(--accent);
-  box-shadow: 0 4px 0 var(--panel-lip), 0 7px 14px rgba(0, 0, 0, 0.35);
-}
-
-button.secondary:hover:not(:disabled) {
-  background: var(--accent);
-  color: #2a1806;
-  box-shadow: 0 6px 0 var(--panel-lip), 0 10px 18px rgba(0, 0, 0, 0.4);
-}
-
-button.danger {
-  background: var(--bad);
-  color: #2a0a10;
-  border-color: var(--bad-dark);
-  box-shadow: 0 4px 0 var(--bad-dark), 0 7px 14px rgba(0, 0, 0, 0.35);
-}
-
-button.danger:hover:not(:disabled) {
-  background: #ff7089;
-  box-shadow: 0 6px 0 var(--bad-dark), 0 10px 18px rgba(0, 0, 0, 0.4);
-}
-
-button.success {
-  background: var(--good);
-  color: #062f22;
-  border-color: var(--good-dark);
-  box-shadow: 0 4px 0 var(--good-dark), 0 7px 14px rgba(0, 0, 0, 0.35);
-}
-
-button.success:hover:not(:disabled) {
-  background: #5cf0bf;
-  box-shadow: 0 6px 0 var(--good-dark), 0 10px 18px rgba(0, 0, 0, 0.4);
+  border: 2px solid var(--accent-dark);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
 }
 
 /* ================================================================
@@ -414,7 +668,12 @@ button.success:hover:not(:disabled) {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 200;
+  /* viewport-fit=cover means the backdrop spans under the punch-hole and the
+   * gesture bar; pad it so a full-height modal (and its close button) can
+   * never land underneath either. */
+  padding: calc(var(--spacing-md) + var(--safe-top)) calc(var(--spacing-md) + var(--safe-right))
+    calc(var(--spacing-md) + var(--safe-bottom)) calc(var(--spacing-md) + var(--safe-left));
+  z-index: var(--z-modal);
   backdrop-filter: blur(4px);
 }
 
@@ -424,10 +683,37 @@ button.success:hover:not(:disabled) {
   border: 4px solid var(--accent);
   border-radius: var(--radius-xl);
   padding: var(--spacing-lg);
-  max-width: 90vw;
-  max-height: 90vh;
+  /* ONE width for every modal (see --modal-w). Each modal used to be sized by
+   * whatever its content happened to want, so on the same 411px screen the Gem
+   * Shop measured 239px and How-to-Play 383px and they read as two different
+   * products. `min-width: 0` is needed because a flex item's automatic minimum
+   * is its min-content size: a wide .shop-grid row would otherwise force the
+   * card past the backdrop and overflow the viewport horizontally. */
+  width: var(--modal-w);
+  max-width: 100%;
+  min-width: 0;
+  /* The backdrop is already inset by the safe areas above, so filling it is
+   * both the tallest safe size and inherently URL-bar-proof — the old 90vh
+   * resolved against the LARGE viewport while the fixed backdrop laid out
+   * against the small one, which pushed the close button off-screen. */
+  max-height: 100%;
+  /*
+   * A column flex box with a pinned title and ONE scrolling body, instead of
+   * scrolling the whole card. Scrolling the card carried the title (and its
+   * absolutely-positioned close button's gutter) away, and the clip landed on
+   * the card's padding/rounded border — which is what read on device as
+   * "content sliced mid-glyph at the bottom edge". The body below owns the
+   * scroll, keeps the border crisp, and fades its own edges.
+   *
+   * `overflow-y: auto` is kept as a safety net for a modal with no recognised
+   * body element (today only .ad-modal, which is short by construction): with
+   * a properly constrained flex child this never engages.
+   */
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   box-shadow: var(--shadow-lg);
   animation: slideUp 0.3s ease;
 }
@@ -445,41 +731,127 @@ button.success:hover:not(:disabled) {
 
 .modal-title {
   color: var(--accent);
-  font-size: 20px;
-  font-weight: 800;
-  margin-bottom: var(--spacing-md);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  /* The body below now supplies --fade-edge of its own top padding (it has to,
+   * so its fade band covers a gutter and not a line of text), so the title's
+   * own margin drops to keep the gap between them looking the same as before. */
+  margin-bottom: var(--spacing-xs);
+  /* Never shrink: as a flex item of .modal it would otherwise give up its
+   * 44px min-height to a long scrolling body and crush the title. */
+  flex: 0 0 auto;
   text-align: center;
+  /* Reserve the close button's gutter on BOTH sides so a centred title can
+   * never run under it, whatever the modal's content-driven width and
+   * whichever inline edge the button lands on. 52px = 44px button + 8px. */
+  padding-inline: 52px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-wrap: balance;
 }
 
 .modal-close {
   position: absolute;
   top: var(--spacing-md);
-  inset-inline-start: var(--spacing-md);
-  background: var(--panel-alt);
-  color: var(--text-muted);
-  border: 2px solid var(--accent-dark);
+  /* Trailing edge, i.e. top-right in English and top-left in Hebrew — the
+   * universal mobile dismiss position. It used to sit at the LEADING edge,
+   * which put it top-left for English readers, exactly where their eye
+   * expects the title. */
+  inset-inline-end: var(--spacing-md);
+  --btn-bg: var(--panel-alt);
+  --btn-fg: var(--text-muted);
+  --btn-border: var(--accent-dark);
+  --btn-lip: var(--panel-lip);
+  border-width: 2px;
   border-radius: 50%;
-  font-size: 20px;
-  cursor: pointer;
+  font-size: var(--fs-xl);
   padding: 0;
   width: 32px;
   height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 3px 0 var(--panel-lip);
-  transition: all 0.15s ease;
+  box-shadow: 0 3px 0 var(--btn-lip);
 }
 
-.modal-close:hover {
-  color: var(--bg);
-  background: var(--accent);
+@media (hover: hover) and (pointer: fine) {
+  .modal-close:hover {
+    --btn-bg: var(--accent);
+    --btn-fg: var(--bg);
+  }
 }
 
 .modal-content {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-md);
+}
+
+/* ----------------------------------------------------------------
+ * THE modal body: the one scrolling region inside a modal card.
+ *
+ * Three class names because the three modal builders each named their body
+ * differently (`.modal-content` — world map, minigames, offline earnings,
+ * help; `.shop-container` — the Gem Shop; `.help-body` — the help modal's
+ * inner page, below its tab strip). They are all the same thing, so they get
+ * the same recipe rather than three near-misses. (INTEGRATOR: worth
+ * collapsing to a single `.modal-body` class at the call sites — see
+ * `handoffs`.)
+ *
+ * `.help-content` is excluded: it carries `.modal-content` but is a LAYOUT
+ * wrapper holding the tab strip plus `.help-body`, and a scroller there would
+ * fight the real scroller nested inside it.
+ *
+ * The padding is not decoration — it is the other half of the --fade-edge
+ * invariant. Scrolled to the top, the top band covers only that padding, so
+ * nothing is dimmed; the instant a line scrolls under it the band starts
+ * dissolving glyphs instead of guillotining them, which is the actual ask:
+ * the bottom clip must never cut a glyph in half.
+ * ---------------------------------------------------------------- */
+.modal-content:not(.help-content),
+.shop-container,
+.help-body {
+  flex: 1 1 auto;
+  /* Without this a flex item refuses to shrink below its content height and
+   * the card grows past .modal's max-height instead of the body scrolling. */
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  /* A flick that reaches the end of the list must not chain into the page
+   * behind the backdrop. */
+  overscroll-behavior: contain;
+  padding-block: var(--fade-edge);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-edge),
+    #000 calc(100% - var(--fade-edge)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-edge),
+    #000 calc(100% - var(--fade-edge)),
+    transparent 100%
+  );
+  /* Second, redundant affordance for platforms that draw a real (non-overlay)
+   * scrollbar; Android draws an overlay one only while the finger moves, which
+   * is precisely why the fade above has to carry the message on its own. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-dark) transparent;
+}
+
+.modal-content:not(.help-content)::-webkit-scrollbar,
+.shop-container::-webkit-scrollbar,
+.help-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.modal-content:not(.help-content)::-webkit-scrollbar-thumb,
+.shop-container::-webkit-scrollbar-thumb,
+.help-body::-webkit-scrollbar-thumb {
+  background: var(--accent-dark);
+  border-radius: 999px;
 }
 
 /* ================================================================
@@ -499,16 +871,16 @@ button.success:hover:not(:disabled) {
 }
 
 .ad-countdown {
-  font-size: 48px;
+  font-size: var(--fs-2xl);
   color: var(--gold);
   text-shadow: var(--gold-outline);
-  font-weight: 800;
+  font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
 }
 
 .ad-label {
   color: var(--text);
-  font-size: 16px;
+  font-size: var(--fs-lg);
 }
 
 .ad-skip-button {
@@ -534,8 +906,8 @@ button.success:hover:not(:disabled) {
 
 .shop-section-title {
   color: var(--accent);
-  font-size: 16px;
-  font-weight: 700;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
   padding-bottom: var(--spacing-md);
   border-bottom: 2px solid var(--panel-alt);
 }
@@ -549,48 +921,53 @@ button.success:hover:not(:disabled) {
 .shop-item {
   padding: var(--spacing-md);
   background: var(--panel-alt);
+  /* CRITICAL FIX: this rule redeclared `background` but not `color`, so it
+   * inherited #2a1806 from the old bare `button` rule. Where a child div
+   * sets its own colour (the IAP shop) that was invisible; where the label
+   * sits directly on the button (every roulette bet chip, minigames.js) it
+   * rendered near-black text on dark purple at 1.14:1 — unreadable. */
+  color: var(--text);
   border: 3px solid var(--accent-dark);
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
   text-align: center;
+  /* A multi-line flex column must be allowed to wrap; `white-space: nowrap`
+   * leaked in from the button base. */
+  white-space: normal;
   box-shadow: var(--shadow-sm);
 }
 
-.shop-item:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--panel);
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-md);
-}
-
-.shop-item:disabled {
-  opacity: 0.6;
-  filter: grayscale(0.5) saturate(0.5);
-  box-shadow: none;
-  cursor: not-allowed;
+@media (hover: hover) and (pointer: fine) {
+  .shop-item:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: var(--panel);
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
+  }
 }
 
 .shop-item-name {
   color: var(--text);
-  font-weight: 700;
-  font-size: 13px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-sm);
 }
 
 .shop-item-amount {
   color: var(--gold);
-  text-shadow: var(--gold-outline);
-  font-size: 14px;
-  font-weight: 800;
+  text-shadow: var(--gold-glow);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
 }
 
 .shop-item-price {
   color: var(--accent);
-  font-weight: 700;
-  font-size: 12px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-sm);
 }
 
 .shop-item.purchased {
@@ -599,75 +976,28 @@ button.success:hover:not(:disabled) {
   color: var(--good);
 }
 
-/* The badge text is language-dependent, and CSS cannot call t(). Rather than
- * bake one language into the stylesheet, the string is driven off <html lang>,
- * which i18n.setLocale() keeps current. Hebrew is the default so an unknown /
- * missing lang still renders the original text rather than nothing. */
+/* The badge text is language-dependent and CSS cannot call t(). It used to be
+ * baked in here twice — literal Hebrew plus a `:root[lang="en"]` override — so
+ * the copy lived in two places and drifted from the `shop.purchased` locale key
+ * the moment either was edited (the Hebrew literal was in fact the wrong word).
+ * The stylesheet now holds NO copy: whoever adds `.purchased` must also set
+ * `data-badge` to t('shop.purchased'). An element without the attribute renders
+ * an empty badge, never a wrong-language one. */
 .shop-item.purchased::after {
-  content: '✓ רכוש';
+  content: attr(data-badge);
   color: var(--good);
   font-weight: 700;
   font-size: 11px;
 }
 
-:root[lang="en"] .shop-item.purchased::after {
-  content: '✓ Owned';
-}
-
-/* ================================================================
- * Progress Bar
- * ================================================================ */
-
-.progress-bar {
-  width: 100%;
-  height: 20px;
-  background: var(--bg-alt);
-  border: 2px solid var(--accent-dark);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--gold));
-  transition: width 0.3s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #2a1806;
-  font-size: 11px;
-  font-weight: 700;
-}
-
 /* ================================================================
  * Toasts (Notifications)
+ *
+ * `.progress-bar` / `.progress-fill` and the `#toasts` / `.toast` family
+ * used to live here. Neither is ever rendered: hud.js owns the live toast
+ * stack as `.hud-toast-area` / `.hud-toast` below, and nothing in src/ uses
+ * a progress bar. Only the keyframes the real toasts animate with survive.
  * ================================================================ */
-
-#toasts {
-  position: fixed;
-  bottom: var(--spacing-lg);
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-  max-width: 400px;
-  width: 90%;
-  z-index: 300;
-  pointer-events: none;
-}
-
-.toast {
-  padding: var(--spacing-md) var(--spacing-lg);
-  background: var(--panel);
-  border: 2px solid var(--panel-alt);
-  border-inline-start: 5px solid var(--accent);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  animation: toastSlideUp 0.3s ease;
-  pointer-events: auto;
-  cursor: pointer;
-}
 
 @keyframes toastSlideUp {
   from {
@@ -678,18 +1008,6 @@ button.success:hover:not(:disabled) {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.toast.good {
-  border-inline-start-color: var(--good);
-}
-
-.toast.bad {
-  border-inline-start-color: var(--bad);
-}
-
-.toast.info {
-  border-inline-start-color: var(--info);
 }
 
 /* ================================================================
@@ -705,6 +1023,10 @@ button.success:hover:not(:disabled) {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+  /* Horizontal only: a vertical drag started here belongs to the camera,
+   * not to a 1px scroll. */
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
 }
 
 .hud-bar::-webkit-scrollbar {
@@ -720,21 +1042,34 @@ button.success:hover:not(:disabled) {
 .hud-world-name {
   color: var(--gold);
   text-shadow: var(--gold-outline);
-  font-weight: 800;
-  font-size: 15px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-lg);
 }
 
 .hud-tier {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  min-width: 110px;
+  /* Shrinkable, but never to nothing. At `min-width: 0` the late-game money
+   * width (worst case "999.99Qa") drove this block to 0px, so the tier badge
+   * AND the progression bar disappeared outright instead of ellipsising —
+   * losing the only readout of what the player is working toward. The badge
+   * already carries text-overflow: ellipsis, so it degrades gracefully. */
+  min-width: 56px;
+  /* The tier name is the one HUD block that can be arbitrarily long
+   * ("Rundown Joint" / "מתחם מוזנח"), so it is the one allowed to shrink
+   * and ellipsis. Everything else in the row is a number that must stay
+   * whole. Device finding F2: this block was what pushed the guest count
+   * off-screen entirely in Hebrew. */
+  flex: 0 1 auto;
 }
 
 .hud-tier-badge {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hud-tier-bar {
@@ -758,16 +1093,29 @@ button.success:hover:not(:disabled) {
 /* Toasts rendered by hud.js live above the build drawer, centered. */
 .hud-toast-area {
   position: fixed;
-  bottom: 42vh;
-  bottom: 42dvh;
-  left: 50%;
-  transform: translateX(-50%);
+  /* Just above the collapsed drawer strip. hud.js also sets this inline
+   * (it predates this rule); keeping the two in sync means the stack is
+   * anchored correctly whichever one ends up winning. */
+  bottom: calc(var(--drawer-collapsed-h) + var(--safe-bottom) + var(--spacing-md));
+  /* Own lane: the zoom cluster sits at the same bottom anchor and is ~52px
+   * wide, so leave it a gutter instead of stacking four toasts on top of
+   * it. The cluster lives at the physical LEFT in Hebrew and the physical
+   * RIGHT in English (see [dir="ltr"] .zoom-controls), which is
+   * inset-inline-END in both — hence the asymmetric reservation here. */
+  inset-inline-end: calc(60px + var(--spacing-sm));
+  inset-inline-start: var(--spacing-sm);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: var(--spacing-sm);
-  width: min(420px, 92vw);
-  z-index: 300;
+  width: auto;
+  max-width: 420px;
+  margin-inline: auto;
+  /* Under modals and under coach marks now (it used to be 300 against the
+   * backdrop's 200, so a toast painted straight over an open dialog). Above
+   * the COLLAPSED drawer, which is what the bottom anchor above assumes;
+   * the expanded sheet promotes itself past this — see --z-drawer-open. */
+  z-index: var(--z-toast);
   pointer-events: none;
 }
 
@@ -779,11 +1127,11 @@ button.success:hover:not(:disabled) {
   border-inline-start: 5px solid var(--accent);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
-  animation: toastSlideUp 0.25s ease;
-  font-size: 13px;
+  animation: toastSlideUp var(--dur-base) var(--ease);
+  font-size: var(--fs-sm);
   text-align: center;
   opacity: 1;
-  transition: opacity 0.4s ease, transform 0.4s ease;
+  transition: opacity var(--dur-slow) var(--ease), transform var(--dur-slow) var(--ease);
 }
 
 .hud-toast-good { border-inline-start-color: var(--good); }
@@ -828,11 +1176,13 @@ button.success:hover:not(:disabled) {
   transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
 }
 
-.hud-lang-btn:hover:not(:disabled),
-.lang-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  filter: brightness(1.08);
-  box-shadow: 0 6px 0 var(--accent-dark), 0 10px 18px rgba(0, 0, 0, 0.4);
+@media (hover: hover) and (pointer: fine) {
+  .hud-lang-btn:hover:not(:disabled),
+  .lang-btn:hover:not(:disabled) {
+    transform: translateY(-2px);
+    filter: brightness(1.08);
+    box-shadow: 0 6px 0 var(--accent-dark), 0 10px 18px rgba(0, 0, 0, 0.4);
+  }
 }
 
 .hud-lang-btn:active:not(:disabled),
@@ -870,18 +1220,10 @@ button.success:hover:not(:disabled) {
 
 @media (max-width: 768px) {
   .hud {
-    height: calc(50px + var(--safe-top));
+    min-height: calc(var(--hud-h) + var(--safe-top));
     padding: calc(var(--spacing-sm) + var(--safe-top)) calc(var(--spacing-sm) + var(--safe-right))
       var(--spacing-sm) calc(var(--spacing-sm) + var(--safe-left));
-    gap: var(--spacing-md);
-  }
-
-  .hud-stat {
-    font-size: 12px;
-  }
-
-  .hud-stat-value {
-    font-size: 13px;
+    gap: var(--spacing-sm);
   }
 
   /* Six HUD blocks + five 1.5rem (--spacing-lg) gaps overflow phone
@@ -889,53 +1231,58 @@ button.success:hover:not(:disabled) {
    * scrollbar is deliberately hidden (scrollbar-width:none / ::-webkit-
    * scrollbar{display:none}) — so give the overflow a visible affordance
    * and shrink the layout cost of the gaps/tier block instead of relying
-   * on an invisible native scrollbar. */
+   * on an invisible native scrollbar. The fade is direction-agnostic
+   * (`to right` mirrors itself under `mask-image` only if we say so), so
+   * both ends are faded symmetrically. */
   .hud-bar {
     gap: var(--spacing-sm);
+    /* --fade-edge invariant, HUD flavour. The band here is --spacing-sm, not
+     * --fade-edge, because the gutter it has to sit over is #hud's own
+     * horizontal padding (--spacing-sm at this breakpoint) — the invariant is
+     * "band == gutter", not "band == one global number".
+     *
+     * Pull the scroller out by exactly that gutter and push its content back
+     * in by the same amount. Net effect: the bar's border box now reaches the
+     * device edge (safe-inset aware, because #hud's padding already carries
+     * --safe-left/--safe-right and the negative margin does not cancel those),
+     * the faded band lands on what was empty padding, and NO stat is dimmed
+     * until the row is genuinely scrolled. Stat width is unchanged — which
+     * matters, because this row is the thing that runs out of width first. */
+    margin-inline: calc(-1 * var(--spacing-sm));
+    padding-inline: var(--spacing-sm);
     -webkit-mask-image: linear-gradient(
-      to left,
+      to right,
       transparent 0,
-      #000 16px,
-      #000 calc(100% - 16px),
+      #000 var(--spacing-sm),
+      #000 calc(100% - var(--spacing-sm)),
       transparent 100%
     );
     mask-image: linear-gradient(
-      to left,
+      to right,
       transparent 0,
-      #000 16px,
-      #000 calc(100% - 16px),
+      #000 var(--spacing-sm),
+      #000 calc(100% - var(--spacing-sm)),
       transparent 100%
     );
   }
 
+  /* Late-game robustness. The five live readouts are all `white-space: nowrap`
+   * numbers whose min-content width IS their full text, so they cannot shrink
+   * — the row's only give is the tier name. Capping it here (not just at the
+   * 480px breakpoint below) means a nine-figure balance or a long Hebrew tier
+   * name pushes into the row's own horizontal scroll instead of shoving the
+   * guest count past the edge with nothing to indicate it went there. The
+   * fade above is now that indication, and it is honest. */
   .hud-tier {
-    min-width: 84px;
+    max-width: 96px;
   }
 
   .modal {
-    max-width: 95vw;
-    max-height: 80vh;
     padding: var(--spacing-md);
-  }
-
-  .panel-content.active {
-    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   }
 
   .build-panel-rows {
     grid-template-columns: 1fr;
-  }
-
-  .action-bar {
-    top: 58px;
-    flex-wrap: wrap;
-    left: var(--spacing-sm);
-    right: var(--spacing-sm);
-  }
-
-  .action-btn {
-    font-size: 12px;
-    padding: var(--spacing-xs) var(--spacing-sm);
   }
 
   .shop-grid {
@@ -962,15 +1309,6 @@ button.success:hover:not(:disabled) {
 }
 
 @media (max-width: 480px) {
-  :root {
-    font-size: 13px;
-  }
-
-  .hud {
-    height: calc(45px + var(--safe-top));
-    gap: var(--spacing-sm);
-  }
-
   /* At this width even the trimmed 768px layout can't fit all six HUD
    * blocks: drop the purely decorative world name so the live numbers
    * (money/income/diamonds) and tier/guest count stay reachable with
@@ -979,57 +1317,56 @@ button.success:hover:not(:disabled) {
     display: none;
   }
 
+  /* --- HUD stat labels become glyphs. ---------------------------------
+     The words were competing with the numbers for the same ~340px, and the
+     Hebrew ones are far longer than the English ('הכנסה/שנייה:' vs
+     'Income/s:'), so the row clipped in EN and clipped *harder* in HE
+     (device finding F2: the guest count was pushed entirely off-screen).
+     Replacing the label with its icon costs the same 5 pixels in every
+     language, which is the only way this row is stable across locales.
+     The label element keeps its text for screen readers — font-size:0
+     collapses it visually without removing it from the accessibility
+     tree, and the icon is decorative ::before content. */
+  .hud-stat-label {
+    font-size: 0;
+    line-height: 1;
+  }
+
+  .hud-stat-label::before {
+    font-size: var(--fs-md);
+    line-height: 1;
+  }
+
+  .hud-money .hud-stat-label::before { content: '💰'; }
+  .hud-income .hud-stat-label::before { content: '📈'; }
+  .hud-diamonds .hud-stat-label::before { content: '💎'; }
+  .hud-guests .hud-stat-label::before { content: '👥'; }
+
   .hud-bar {
-    gap: var(--spacing-xs);
+    gap: var(--spacing-sm);
+  }
+
+  /* The value is the payload, but at 17px five of them plus the tier badge
+     still overflow 411px. 14px is the largest size at which the whole row
+     fits without scrolling in EITHER language — measured, not guessed. */
+  .hud-stat-value {
+    font-size: var(--fs-md);
   }
 
   .hud-tier {
-    min-width: 64px;
-  }
-
-  .panels {
-    height: 50vh;
-    height: 50dvh;
-  }
-
-  #game {
-    /* Keep in sync with .panels' height above (50vh at this breakpoint). */
-    height: calc(100% - 50vh);
-    height: calc(100% - 50dvh);
-  }
-
-  .modal {
-    max-width: 98vw;
-    padding: var(--spacing-md);
-  }
-
-  .panel-content.active {
-    grid-template-columns: 1fr;
+    /* Enough for a two-word tier name before the ellipsis kicks in; it is
+       the only block allowed to give width back to the numbers. */
+    max-width: 84px;
   }
 
   .shop-grid {
     grid-template-columns: 1fr;
   }
 
-  .ad-countdown {
-    font-size: 36px;
-  }
-
-  /* .panels grew to 50vh at this breakpoint — keep the zoom cluster's
-   * bottom offset in sync with it, same rule as #game above. */
-  .zoom-controls {
-    bottom: calc(50vh + var(--spacing-sm));
-    bottom: calc(50dvh + var(--spacing-sm));
-  }
-
   .zoom-btn {
-    width: 38px;
-    height: 38px;
-    font-size: 17px;
-  }
-
-  .zoom-label {
-    font-size: 10px;
+    width: 44px;
+    height: 44px;
+    font-size: var(--fs-xl);
   }
 }
 
@@ -1054,7 +1391,7 @@ button.success:hover:not(:disabled) {
   flex-direction: column;
   align-items: center;
   gap: var(--spacing-sm);
-  z-index: 90;
+  z-index: var(--z-hud);
 }
 
 /* Mirror to the opposite corner for LTR. Kept as an explicit physical
@@ -1069,56 +1406,25 @@ button.success:hover:not(:disabled) {
   right: var(--spacing-md);
 }
 
+/* Round icon buttons: the .btn recipe with a circular footprint. Only the
+ * geometry is restated; fill/lip/press all come from the shared variant
+ * knobs, so the zoom cluster can no longer drift away from the rest of the
+ * chrome the way it had (its own bespoke shadow, its own disabled recipe). */
 .zoom-btn {
   width: 48px;
   height: 48px;
   padding: 0;
   border-radius: 50%;
-  border: 3px solid var(--accent-dark);
-  background: var(--accent);
-  color: #2a1806;
-  font-size: 22px;
-  font-weight: 800;
+  font-size: var(--fs-xl);
   line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 4px 0 var(--accent-dark), 0 7px 14px rgba(0, 0, 0, 0.4);
-  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
-}
-
-.zoom-btn:hover:not(:disabled) {
-  background: var(--gold);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 0 var(--accent-dark), 0 10px 18px rgba(0, 0, 0, 0.45);
-}
-
-.zoom-btn:active:not(:disabled) {
-  transform: translateY(3px);
-  box-shadow: none;
-}
-
-.zoom-btn:disabled {
-  opacity: 0.55;
-  filter: grayscale(0.7) saturate(0.35);
-  box-shadow: none;
-  border-color: rgba(255, 255, 255, 0.15);
-  cursor: not-allowed;
 }
 
 .zoom-btn-fit {
-  font-size: 18px;
-  background: var(--panel-alt);
-  color: var(--text);
-  border-color: var(--accent);
-  box-shadow: 0 4px 0 var(--panel-lip), 0 7px 14px rgba(0, 0, 0, 0.4);
-}
-
-.zoom-btn-fit:hover:not(:disabled) {
-  background: var(--accent);
-  color: #2a1806;
-  box-shadow: 0 6px 0 var(--panel-lip), 0 10px 18px rgba(0, 0, 0, 0.45);
+  font-size: var(--fs-lg);
+  --btn-bg: var(--panel-alt);
+  --btn-fg: var(--text);
+  --btn-border: var(--accent);
+  --btn-lip: var(--panel-lip);
 }
 
 .zoom-label {
@@ -1129,50 +1435,145 @@ button.success:hover:not(:disabled) {
   color: var(--text);
   border: 2px solid var(--accent-dark);
   border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 800;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 /* ================================================================
- * Action bar (built by src/main.js)
+ * Action dock (built by src/main.js as #actions / .action-bar)
+ *
+ * A SINGLE horizontal row of icon-forward pills, pinned directly under the
+ * HUD. It used to be `flex-direction: column` with a `flex-wrap: wrap` that
+ * could never fire (a column container with an indefinite main size never
+ * wraps), so its five buttons stacked into a 405x252px invisible column
+ * straight down the middle of the casino — measured on device, the single
+ * most intrusive element on screen and a full-width touch blocker.
+ *
+ * Three rules keep it honest:
+ *   1. `flex-wrap: nowrap` — it can NEVER grow to a second row, in either
+ *      language, at any width. Hebrew labels are ~25% longer than English,
+ *      so this is not theoretical.
+ *   2. `overflow-x: auto` — if the pills genuinely don't fit (they don't at
+ *      360px in Hebrew) the row scrolls instead of growing.
+ *   3. The container is pointer-events:none (C1) and paints nothing, so the
+ *      gaps between pills are see-through AND touch-through: only the pills
+ *      themselves take a finger. Scroll still works, because a drag that
+ *      starts on a pill chains to the nearest scrollable ancestor.
  * ================================================================ */
 
 .action-bar {
   position: absolute;
-  top: 68px;
-  inset-inline-end: var(--spacing-md);
+  top: calc(var(--hud-h) + var(--safe-top) + var(--spacing-xs));
+  inset-inline-start: calc(var(--spacing-xs) + var(--safe-left));
+  inset-inline-end: calc(var(--spacing-xs) + var(--safe-right));
   display: flex;
-  flex-direction: column;
-  gap: var(--spacing-sm);
-  z-index: 90;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 3px;
+  /*
+   * The horizontal padding is load-bearing, not cosmetic: it is the other
+   * half of the --fade-edge invariant. The fade below is a SCROLL AFFORDANCE,
+   * and round 1 shipped it as an unconditional 16px band while the row was
+   * measured to overflow by 0px at 320/360/411px in both languages — so on
+   * every real phone it did nothing but dim the first and last pill of a row
+   * that had nothing hidden. There is no CSS predicate for "this element
+   * overflows", but there is a geometric one: reserve a gutter the width of
+   * the band, and the band can only ever reach a pill once a pill has
+   * actually been scrolled underneath it. Fits -> no fade. Overflows -> the
+   * fade appears exactly at the end that has content hidden past it.
+   *
+   * padding-inline MUST stay equal to the gradient stops below.
+   */
+  padding: 2px var(--fade-edge);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  /* Horizontal only — a vertical drag that lands on a pill belongs to the
+   * camera, not to this row. */
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--fade-edge),
+    #000 calc(100% - var(--fade-edge)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--fade-edge),
+    #000 calc(100% - var(--fade-edge)),
+    transparent 100%
+  );
+  z-index: var(--z-hud);
+}
+
+.action-bar::-webkit-scrollbar {
+  display: none;
 }
 
 .action-btn {
-  padding: var(--spacing-sm) var(--spacing-md);
-  background: var(--panel);
-  color: var(--text);
-  border: 3px solid var(--accent-dark);
-  border-radius: var(--radius-md);
-  font-size: 13px;
-  font-weight: 700;
-  text-align: start;
-  box-shadow: 0 4px 0 var(--panel-lip), 0 6px 12px rgba(0, 0, 0, 0.35);
+  /* Shrink-to-fit, NOT scroll-to-reach. `overflow-x: auto` above is the
+   * last-resort safety net; the primary mechanism is that a pill gives up
+   * label width before the row gives up a button. That matters because the
+   * previous incarnation of this bar relied on a horizontal scroll gesture
+   * nobody is cued to make, and if that gesture ever fails to reach the
+   * scroller the trailing buttons (Ad, and the "?" help entry point) become
+   * unreachable rather than merely truncated. min-width keeps every pill a
+   * legal 44px touch target no matter how hard it is squeezed. */
+  flex: 0 1 auto;
+  display: inline-block;
+  min-width: 44px;
+  height: 44px;
+  /* 44px box minus the two 2px borders — centres the label without a flex
+   * container, which is what makes text-overflow work at all. */
+  line-height: 40px;
+  padding: 0 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 999px;
+  border-width: 2px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  text-align: center;
+  --btn-bg: var(--panel);
+  --btn-fg: var(--text);
+  --btn-border: var(--accent-dark);
+  --btn-lip: var(--panel-lip);
+  box-shadow: 0 3px 0 var(--btn-lip), 0 5px 10px rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(6px);
-  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
 
-.action-btn:hover:not(:disabled) {
-  background: var(--accent);
-  color: #2a1806;
-  transform: translateY(-2px);
-  box-shadow: 0 6px 0 var(--panel-lip), 0 9px 16px rgba(0, 0, 0, 0.4);
+/* Icon-only variant — a round pill for controls whose glyph IS the label.
+ * `.action-btn--help` is the class the first-run-guide workstream appends to
+ * this dock for its "?" entry point (contract C7); both names are matched so
+ * the append needs no CSS of its own and the dock's width budget stays
+ * predictable however that button ends up labelled. */
+.action-btn-icon,
+.action-btn--help {
+  flex: 0 0 auto;
+  min-width: 44px;
+  width: 44px;
+  padding: 0;
+  font-size: var(--fs-lg);
+  /* Quieter than the five primary destinations: help is always available,
+   * never the thing you came here to press. */
+  --btn-bg: var(--panel-alt);
+  --btn-fg: var(--accent);
 }
 
-.action-btn:active:not(:disabled) {
-  transform: translateY(3px);
-  box-shadow: none;
+@media (hover: hover) and (pointer: fine) {
+  .action-btn:hover:not(:disabled) {
+    --btn-bg: var(--accent);
+    --btn-fg: #2a1806;
+    transform: translateY(-2px);
+    box-shadow: 0 5px 0 var(--btn-lip), 0 8px 14px rgba(0, 0, 0, 0.4);
+  }
 }
 
 /* ================================================================
@@ -1206,19 +1607,46 @@ button.success:hover:not(:disabled) {
   animation: pwaInstallPulse 2.4s ease-in-out infinite;
 }
 
-.pwa-install-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #5cf0bf, var(--good));
-  transform: translateY(-2px);
-  box-shadow: 0 6px 0 var(--good-dark), 0 11px 20px rgba(0, 0, 0, 0.45);
-}
-
-.pwa-install-btn:active:not(:disabled) {
-  transform: translateY(3px);
-  box-shadow: none;
+@media (hover: hover) and (pointer: fine) {
+  .pwa-install-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, #5cf0bf, var(--good));
+    transform: translateY(-2px);
+    box-shadow: 0 6px 0 var(--good-dark), 0 11px 20px rgba(0, 0, 0, 0.45);
+  }
 }
 
 .pwa-install-btn.hidden {
   display: none !important;
+}
+
+/* ----------------------------------------------------------------
+ * The service-worker update bar / install-help bar (both are
+ * `.pwa-update-bar`; ensureUpdateBar() at src/ui/pwa.js:398 and
+ * ensureInstallHelpBar() at :493).
+ *
+ * ROUND 2, finding 2 — the last layer that was NOT on the scale. pwa.js
+ * injects its own <style> at runtime carrying a hardcoded `z-index:400`
+ * (src/ui/pwa.js:211), which is numerically --z-modal. Both bars are appended
+ * to #modals, the same host as every modal backdrop, so "update available"
+ * tied with an open dialog and the winner was decided by whichever DOM node
+ * happened to be appended last — i.e. a bar could paint straight over the Gem
+ * Shop, which is the exact class of bug this scale exists to end.
+ *
+ * It has to be re-stated HERE rather than fixed at source because pwa.js
+ * injects that <style> into <head> *after* this file's <link>, so at equal
+ * specificity the injected rule wins on source order. `#ui-layer` (the bars'
+ * grandparent) lifts this to (1,1,0) and settles it.
+ *
+ * Above the expanded build sheet, below modals. These bars are NOT toasts for
+ * layering purposes even though they share the bottom strip: a toast is
+ * transient and may be covered, but these two carry the only action available
+ * ("update ready — Refresh", and the in-app-browser install help). Both are
+ * `position: fixed; bottom: 12px` (pwa.js), which is dead centre of the
+ * EXPANDED sheet's box — so at --z-toast they were painted behind it and were
+ * unreachable for most of active play, which is when the sheet is open.
+ * ---------------------------------------------------------------- */
+#ui-layer .pwa-update-bar {
+  z-index: calc(var(--z-drawer-open) + 10);
 }
 
 @keyframes pwaInstallPulse {
@@ -1251,6 +1679,10 @@ button.success:hover:not(:disabled) {
 .build-panel-header {
   position: sticky;
   top: 0;
+  /* Deliberately NOT on the --z-* scale: this orders the sticky tab strip
+   * against its own sibling rows INSIDE the drawer card, and never competes
+   * with anything outside it. Keeping it a bare small integer is what says
+   * "local", so nobody reads it as a fourth global layer. */
   z-index: 2;
   display: flex;
   align-items: center;
@@ -1266,30 +1698,46 @@ button.success:hover:not(:disabled) {
   background: transparent;
 }
 
+/* The tab strip is the .btn--ghost variant: no fill, no lip, no border, so
+ * it reads as navigation rather than as five stacked stickers. It no longer
+ * has to write `transform: none; box-shadow: none` to un-paint a base rule,
+ * because the base is now a zero-specificity bridge (see C8 above). */
 .panel-tab-btn {
   flex: 1;
-  padding: var(--spacing-md) var(--spacing-sm);
+  min-width: 0;
+  padding: var(--spacing-sm) var(--spacing-xs);
+  --btn-bg: transparent;
+  --btn-fg: var(--text-muted);
+  --btn-border: transparent;
+  --btn-lip: transparent;
   border: none;
   border-bottom: 4px solid transparent;
   border-radius: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 14px;
-  font-weight: 700;
+  box-shadow: none;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
   white-space: nowrap;
 }
 
-.panel-tab-btn:hover:not(:disabled) {
-  background: var(--panel-alt);
-  color: var(--text);
+.panel-tab-btn:active:not(:disabled) {
+  /* Ghost chrome must not bounce: a 3px drop inside a 44px strip just looks
+   * like the tab bar glitched. Tint instead. */
   transform: none;
   box-shadow: none;
+  --btn-bg: var(--panel-alt);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .panel-tab-btn:hover:not(:disabled) {
+    --btn-bg: var(--panel-alt);
+    --btn-fg: var(--text);
+  }
 }
 
 .panel-tab-btn.is-active {
-  color: var(--accent);
+  --btn-fg: var(--accent);
+  --btn-bg: var(--panel-alt);
   border-bottom-color: var(--accent);
-  background: var(--panel-alt);
 }
 
 .panel-x10-toggle {
@@ -1297,7 +1745,7 @@ button.success:hover:not(:disabled) {
   align-items: center;
   gap: var(--spacing-xs);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -1335,19 +1783,19 @@ button.success:hover:not(:disabled) {
 
 .panel-row-name {
   color: var(--accent);
-  font-weight: 700;
-  font-size: 13px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-sm);
 }
 
 .panel-row-desc {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.35;
 }
 
 .panel-row-owned {
   color: var(--text);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   margin-top: 2px;
 }
 
@@ -1361,21 +1809,26 @@ button.success:hover:not(:disabled) {
 
 .panel-row-cost {
   color: var(--gold);
-  text-shadow: var(--gold-outline);
-  font-size: 12px;
-  font-weight: 700;
+  /* Soft glow, not the 4-direction outline: this sits on an opaque panel
+   * where there is nothing behind it to fight, and the hard outline turned
+   * the price into a smear at this size. */
+  text-shadow: var(--gold-glow);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
   text-align: center;
   white-space: nowrap;
 }
 
 .panel-buy-btn {
   padding: var(--spacing-xs) var(--spacing-md);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
-.panel-buy-btn.is-disabled {
-  opacity: 0.5;
-}
+/* `.panel-buy-btn.is-disabled { opacity: .5 }` used to live here. At (0,2,0)
+ * it out-specified `button:disabled` on the one element that carries both,
+ * so the drawer — which is mostly unaffordable rows on a fresh save — was
+ * rendered at 3.4:1. The single disabled recipe in the C8 block owns this
+ * state now; panels.js can drop the redundant class (see handoffs). */
 
 /* ================================================================
  * Offline earnings report (built by src/main.js)
@@ -1383,15 +1836,15 @@ button.success:hover:not(:disabled) {
 
 .offline-away {
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   text-align: center;
 }
 
 .offline-total {
   color: var(--gold);
   text-shadow: var(--gold-outline);
-  font-size: 30px;
-  font-weight: 800;
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
   text-align: center;
 }
 
@@ -1399,28 +1852,41 @@ button.success:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-xs);
-  min-width: min(320px, 80vw);
+  /* `80vw` used to be the second term, and vw is the wrong yardstick: it
+   * measures the VIEWPORT while this box lives inside .modal's content area,
+   * which is the viewport minus the backdrop's safe-area gutters, minus
+   * .modal's 4px border, minus its 16px padding — ~90px less. Below a ~395px
+   * viewport 80vw therefore exceeded the box containing it and pushed the
+   * report sideways inside its own scroller (overflow-x computes to `auto`
+   * once overflow-y is, so it became a stray horizontal scroll under the
+   * bottom fade). `100%` is the same intent measured against the right box.
+   * The list is a stretch-aligned flex child anyway, so this only ever acts
+   * as the floor it was written to be. */
+  min-width: min(320px, 100%);
 }
 
+/* No `row-reverse` here (it used to be on both of these): main.js already
+ * sets dir="rtl"/"ltr" on the modal, so the row is direction-aware, and
+ * reversing it on top of that flipped the pair BACKWARDS in both languages —
+ * the branch name landed on the trailing edge in Hebrew and the leading edge
+ * in English, opposite to every other list in the app. */
 .offline-row {
   display: flex;
-  flex-direction: row-reverse;
   justify-content: space-between;
   gap: var(--spacing-md);
   padding: var(--spacing-xs) var(--spacing-sm);
   background: var(--panel-alt);
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .offline-row-amount {
   color: var(--good);
-  font-weight: 700;
+  font-weight: var(--fw-bold);
 }
 
 .offline-actions {
   display: flex;
-  flex-direction: row-reverse;
   justify-content: center;
   gap: var(--spacing-sm);
 }
@@ -1437,56 +1903,18 @@ button.success:hover:not(:disabled) {
  * The sheet's geometry is driven by `transform: translateY()` on
  * .build-panel itself, not by resizing #game — so collapsing/expanding
  * never triggers a canvas relayout and needs no ResizeObserver wiring.
- * #game's own height is fixed to the *collapsed* strip's height and
- * doesn't change with the toggle: the expanded sheet is a fixed-position
- * overlay that visually covers part of the floor instead.
+ * Per contract C3 #game is now the FULL viewport and the sheet simply
+ * floats over it; main.js re-reports the collapsed/expanded strip height to
+ * the renderer as a view inset (C2) so the diorama stays framed in the
+ * unobstructed rectangle.
  * ================================================================ */
 @media (max-width: 640px), (max-height: 480px) {
-  /* --- HUD: compact height, safe-area already handled by the base rule
-     via --safe-top, just retune the numbers for a phone. --- */
+  /* --- HUD: compact padding; the height comes from the base rule's
+     min-height so the 44px language pill can never overhang it. --- */
   .hud {
-    height: calc(52px + var(--safe-top));
-    padding: calc(var(--spacing-sm) + var(--safe-top)) calc(var(--spacing-sm) + var(--safe-right))
-      var(--spacing-sm) calc(var(--spacing-sm) + var(--safe-left));
+    padding: calc(var(--spacing-xs) + var(--safe-top)) calc(var(--spacing-sm) + var(--safe-right))
+      var(--spacing-xs) calc(var(--spacing-sm) + var(--safe-left));
     gap: var(--spacing-sm);
-  }
-
-  #game {
-    height: calc(100% - var(--drawer-collapsed-h) - var(--safe-bottom));
-  }
-
-  /* --- Action bar: BUG FIX — this used to be a nowrap horizontal-scroll
-     row with a mask-image edge fade meant to hint "more buttons this way".
-     On real phone widths (verified at 411px) the fade wasn't a reliable
-     affordance — the last button (or two) just sat hard-clipped at the
-     viewport edge with nothing to signal it was reachable by scrolling, so
-     the bar read as broken. Wrapping to as many rows as needed guarantees
-     every button is always fully visible with zero reliance on a scroll
-     gesture nobody is cued to make. Pinned under the HUD so it never eats
-     the floor and never collides with the bottom-left zoom cluster. --- */
-  .action-bar {
-    position: fixed;
-    top: calc(52px + var(--safe-top) + var(--spacing-xs));
-    left: calc(var(--spacing-xs) + var(--safe-left));
-    right: calc(var(--spacing-xs) + var(--safe-right));
-    bottom: auto;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-xs);
-  }
-
-  .action-btn {
-    flex: 0 0 auto;
-    min-height: 44px;
-    min-width: 44px;
-    border-radius: 999px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    font-size: 12px;
-    padding: 0 var(--spacing-md);
   }
 
   /* --- Zoom cluster: stays bottom-left, clear of the drawer's collapsed
@@ -1495,7 +1923,10 @@ button.success:hover:not(:disabled) {
   .zoom-controls {
     left: calc(var(--spacing-sm) + var(--safe-left));
     bottom: calc(var(--drawer-collapsed-h) + var(--safe-bottom) + var(--spacing-sm));
-    transition: opacity 0.2s ease;
+    /* `visibility` is transitioned with a 0s duration so it flips at the END
+     * of the opacity fade when hiding (see the :has() rule below) and
+     * IMMEDIATELY when showing — the standard fade-out-then-remove pattern. */
+    transition: opacity var(--dur-base) var(--ease), visibility 0s;
   }
 
   [dir="ltr"] .zoom-controls {
@@ -1506,31 +1937,64 @@ button.success:hover:not(:disabled) {
   .zoom-btn {
     min-width: 44px;
     min-height: 44px;
+    width: 44px;
+    height: 44px;
   }
 
-  /* The cluster's bottom offset above is only correct for the COLLAPSED
-     strip height. Once the sheet expands to 62dvh it slides up underneath
-     the (still-pinned, z-index:90) cluster, whose three 48px circles then
-     sit on top of the build-panel-rows content and steal its taps. Hide
-     and disable it whenever .build-panel carries the is-expanded state
-     class panels.js already toggles — no JS change needed since
-     .zoom-controls is always appended after #panels under #ui-layer. */
-  .panels:has(.build-panel.is-expanded) ~ .zoom-controls {
+  /* The cluster's bottom offset above is only correct for the COLLAPSED strip
+     height. Once the sheet expands to 62dvh it slides up underneath the
+     (still-pinned) cluster, whose three 44px circles then sit on top of the
+     build-panel-rows content and steal the Buy buttons' taps.
+
+     ROUND 2 — why the round-1 version did not work. It was:
+         .panels:has(.build-panel.is-expanded) ~ .zoom-controls {
+           opacity: 0; pointer-events: none; }
+     The sibling combinator was fine (hud.js appends .zoom-controls to
+     #ui-layer, i.e. after the static #panels), and the rule DID apply. The
+     bug is that `pointer-events: none` on a container is not a barrier:
+     per spec a descendant that sets any other value becomes hit-testable
+     again, and contract C1 says exactly that — `#ui-layer .zoom-btn
+     { pointer-events: auto }`. So the three buttons stayed live under an
+     opacity-0 cluster. Invisible AND tappable is the worst of both.
+
+     Two independent mechanisms now, neither relying on sibling order:
+       1. `visibility: hidden` — INHERITED, and a visibility-hidden box is
+          removed from hit-testing outright, so no descendant `auto` can
+          resurrect it. This is the one that actually holds the line.
+       2. pointer-events:none re-asserted ON the buttons themselves, at
+          (1,3,0) vs C1's (1,1,0), so they are dead from the first frame
+          rather than after the fade finishes.
+     The ancestor is #ui-layer rather than a sibling of #panels, so this
+     survives any future re-parenting of the cluster. */
+  #ui-layer:has(.build-panel.is-expanded) .zoom-controls {
     opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--dur-base) var(--ease), visibility 0s linear var(--dur-base);
+  }
+
+  #ui-layer:has(.build-panel.is-expanded) .zoom-controls,
+  #ui-layer:has(.build-panel.is-expanded) .zoom-btn {
     pointer-events: none;
   }
 
-  /* --- Build drawer -> collapsible bottom sheet. .panels becomes a fixed,
-     unstyled host; .build-panel itself is the visual sheet card and owns
-     the slide animation.
-     .panels' own box is sized by .build-panel's layout height (62vh),
-     NOT by the transform that slides most of that height off-screen —
-     transforms never shrink the layout box. Left at pointer-events:auto
-     (inherited from #ui-layer > *), that full-height, mostly invisible
-     box would sit above the canvas (z-index 80 > canvas) and swallow
-     every touch over the collapsed drawer's "off-screen" two-thirds.
-     Kill hit-testing on the host itself and re-enable it only on the
-     visible sheet card. --- */
+  /* An open sheet is the surface the player is reading, so it outranks the
+     transient toast lane that runs straight through it (--z-drawer-open).
+     Collapsed, it stays under the toasts, which are anchored just above its
+     78px strip and must remain visible there. */
+  #ui-layer:has(.build-panel.is-expanded) .panels {
+    z-index: var(--z-drawer-open);
+  }
+
+  /* --- Build drawer -> collapsible bottom sheet floating OVER a full-height
+     canvas. .panels is a fixed, invisible host; .build-panel is the visual
+     sheet card and owns the slide.
+     .panels' own box is sized by .build-panel's layout height (62dvh), NOT
+     by the transform that slides most of that height off-screen —
+     transforms never shrink the layout box — so the host must stay
+     pointer-events:none or that mostly-invisible box swallows every touch
+     over the bottom two-thirds of the floor. C1 above is what actually
+     enforces that now (the old `.panels { pointer-events: none }` here lost
+     to `#ui-layer > *` at (1,0,0) and never took effect on the device). --- */
   .panels {
     position: fixed;
     inset-inline-start: 0;
@@ -1543,8 +2007,7 @@ button.success:hover:not(:disabled) {
     box-shadow: none;
     backdrop-filter: none;
     overflow: visible;
-    z-index: 80;
-    pointer-events: none;
+    z-index: var(--z-drawer);
   }
 
   .build-panel {
@@ -1558,13 +2021,16 @@ button.success:hover:not(:disabled) {
     box-shadow: var(--shadow-lg);
     backdrop-filter: blur(8px);
     overflow: hidden;
-    padding-bottom: var(--safe-bottom);
-    pointer-events: auto;
     /* Collapsed baseline: only --drawer-collapsed-h stays on-screen. This
        is also the pre-JS default, so the drawer starts collapsed even
-       before panels.js has attached a state class. */
+       before panels.js has attached a state class.
+       translateY(100%) resolves against this element's BORDER box, so the
+       visible strip is exactly --drawer-collapsed-h — which is why that
+       token has to count the 4px border-top as well as the handle and the
+       tab row. It previously did not, and the 4px that fell off the bottom
+       was precisely the active tab's gold underline. */
     transform: translateY(calc(100% - var(--drawer-collapsed-h) - var(--safe-bottom)));
-    transition: transform 0.32s cubic-bezier(0.22, 0.9, 0.32, 1);
+    transition: transform var(--dur-slow) var(--ease);
     will-change: transform;
   }
 
@@ -1576,36 +2042,56 @@ button.success:hover:not(:disabled) {
     transform: translateY(0);
   }
 
+  /* Grab handle. 30px tall and full-sheet-wide, so it is a genuinely
+     comfortable target even though the pill it draws is 5px — the previous
+     18px strip was the ONLY way to collapse the sheet and was well under
+     the 44px floor the rest of this block enforces. A soft gradient cap
+     reads as "this edge lifts". */
   .drawer-handle {
     display: flex;
     flex: 0 0 auto;
     align-items: center;
     justify-content: center;
-    height: 18px;
+    height: 30px;
     cursor: grab;
     touch-action: none;
+    background: linear-gradient(to bottom, rgba(255, 183, 3, 0.12), transparent);
   }
 
   .drawer-handle::before {
     content: '';
-    width: 40px;
+    width: 44px;
     height: 5px;
     border-radius: 999px;
+    background: var(--accent);
+    opacity: 0.75;
+  }
+
+  /* Rotate the pill into a chevron-ish "pull down" hint when open, so the
+     collapsed and expanded states are visually distinct at a glance. */
+  .build-panel.is-expanded .drawer-handle::before {
+    opacity: 0.45;
     background: var(--text-muted);
-    opacity: 0.6;
   }
 
   .build-panel-header {
     flex: 0 0 auto;
-    min-height: 46px;
-    padding: 0 var(--spacing-sm);
-    gap: var(--spacing-sm);
+    min-height: 44px;
+    /* 4px was not a gutter, it was a rounding error: the header's last flex
+       item is the "×10" toggle, and in Hebrew (toggle at the physical left)
+       and in English (toggle at the physical right) alike its label ended up
+       flush against the screen edge. Physical left/right longhands rather
+       than a logical pair, because --safe-left/--safe-right are tied to real
+       device edges and must not swap with reading direction. */
+    padding: 0 calc(var(--spacing-sm) + var(--safe-right)) 0
+      calc(var(--spacing-sm) + var(--safe-left));
+    gap: var(--spacing-xs);
   }
 
   .panel-tab-btn {
     min-height: 44px;
     padding: 0 var(--spacing-xs);
-    font-size: 12px;
+    font-size: var(--fs-xs);
   }
 
   .panel-x10-toggle {
@@ -1614,13 +2100,18 @@ button.success:hover:not(:disabled) {
        so pad it out to a real 44px tap target. */
     min-height: 44px;
     padding: var(--spacing-xs) 0;
-    font-size: 11px;
+    font-size: var(--fs-xs);
   }
 
   .build-panel-rows {
     flex: 1 1 auto;
     grid-template-columns: 1fr;
     padding: var(--spacing-sm);
+    /* The safe-area inset lives on the SCROLLER, not on .build-panel: the
+       sheet's own bottom padding would be pushed off-screen by the collapse
+       transform, whereas here it becomes empty run-off under the gesture
+       bar and keeps the last row reachable. */
+    padding-bottom: calc(var(--spacing-sm) + var(--safe-bottom));
     gap: var(--spacing-sm);
   }
 
@@ -1637,7 +2128,6 @@ button.success:hover:not(:disabled) {
   /* --- General tap-target hygiene: every button at least 44×44 CSS px,
      touch-only device (no mouse/keyboard to fall back on). --- */
   button,
-  .tab,
   .card {
     min-height: 44px;
   }
@@ -1647,9 +2137,82 @@ button.success:hover:not(:disabled) {
     height: 44px;
   }
 
+  /* --- Icon-only dock on phones.
+     Six labelled pills plus the install chip need ~445px of a 404px row, so
+     every label rendered as a clipped stub ("🌍 …", "🃏 Bl…") — worse in
+     Hebrew, where the words are longer. main.js emits the glyph and the words
+     as separate spans (splitActionLabel/setActionLabel), so the words can be
+     dropped here and the row becomes seven clean 44px targets that fit with
+     room to spare. The text stays in the DOM and `aria-label`/`title` carry the
+     full name, so nothing is lost to assistive tech. --- */
+  .action-btn-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .action-btn {
+    flex: 0 0 auto;
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    /* Containing block for the visually-hidden .action-btn-text above. Without
+     * it the absolute span resolves against .action-bar (the nearest positioned
+     * ancestor) and escapes its own button, which both dirties the row's scroll
+     * width and would let a long label drag the dock's overflow around. */
+    position: relative;
+  }
+
+  /* The glyph SPAN inside a dock button.
+   * Deliberately NOT `.action-btn-icon` — that name is already taken (line
+   * ~1557) by an icon-only BUTTON variant carrying `min-width: 44px`, which
+   * floored this span to the button's full border-box width and clipped 2px
+   * off its own slot. Two different concepts must not share one class. */
+  .action-btn-glyph {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 0;
+    font-size: 19px;
+    line-height: 1;
+  }
+
+  /* The help button is a bare "?" with no glyph, so it has no .action-btn-glyph
+     to size — give the button itself the same optical weight as its neighbours. */
+  .action-btn--help {
+    font-size: 20px;
+    font-weight: 800;
+  }
+
+  /* pwa.js appends the install CTA into #actions, so it competes for the dock's
+     single row. It carries `white-space: nowrap` and no ellipsis, which makes
+     its min-content width the WHOLE label — so as a flex item it refused to
+     shrink while every .action-btn beside it collapsed to a stub ("🌍 …",
+     "🎡 R…", "🃏 Bl…"), which is exactly backwards: a rare, dismissible install
+     prompt must never outrank the game's own navigation.
+     Collapse it to its glyph here. `font-size: 0` hides the text visually while
+     leaving it in the DOM, so the button keeps its accessible name. */
   .pwa-install-btn {
-    font-size: 12px;
-    padding: var(--spacing-xs) var(--spacing-md);
+    flex: 0 0 auto;
+    gap: 0;
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+    font-size: 0;
+  }
+
+  .pwa-install-btn::before {
+    content: '📲';
+    font-size: 19px;
+    line-height: 1;
   }
 }
 
@@ -1662,64 +2225,308 @@ button.success:hover:not(:disabled) {
  * ================================================================ */
 @media (max-height: 480px) {
   :root {
-    --drawer-collapsed-h: 48px;
+    /* 4px border-top + 20px handle + 44px header. Counted the same way as
+       the portrait value so the collapsed strip is never short of its own
+       content — the previous 48px was 4px shy and clipped the active tab's
+       underline in exactly the same way portrait did. */
+    --drawer-collapsed-h: 68px;
+    /* Still has to clear the 44px language pill + 8px of padding. */
+    --hud-h: 52px;
+  }
+
+  /* Vertical space is the scarce axis in landscape: HUD + dock were eating
+     108px of a 412px viewport (26%) before the sheet took its share. Trimming
+     the dock's own padding buys the casino back ~10px without shrinking any
+     touch target below 44px — the pills keep their size, the row loses its
+     slack. */
+  .action-bar {
+    padding-block: 0;
+    top: calc(var(--hud-h) + var(--safe-top));
   }
 
   .hud {
-    height: calc(40px + var(--safe-top));
     padding-top: calc(var(--spacing-xs) + var(--safe-top));
     padding-bottom: var(--spacing-xs);
-  }
-
-  .hud-stat-value {
-    font-size: 12px;
-  }
-
-  .hud-stat-label {
-    font-size: 10px;
   }
 
   .hud-world {
     display: none;
   }
 
-  .action-bar {
-    top: calc(40px + var(--safe-top) + var(--spacing-xs));
-  }
-
+  /* 45dvh, was 70dvh.
+     Measured on the device at 915x412 and 844x390: at 70dvh the expanded sheet
+     is 289px and the HUD+dock chrome above it is 108px, which together leave a
+     SIXTEEN PIXEL band of visible casino (ten at 844x390) — 4% and 2% of the
+     screen. The player opens the drawer to buy something for a casino they can
+     no longer see, and the camera has nothing left to frame.
+     45dvh puts the sheet at ~185px and the free band at ~129px (31% of the
+     viewport), while still clearing the dock. The sheet scrolls, so the cost is
+     one fewer visible row; the benefit is that the game remains a game.
+     Portrait is unaffected: its band is already 24% with the sheet open. */
   .build-panel {
-    height: 70vh;
-    height: 70dvh;
-  }
-
-  .build-panel-header {
-    min-height: 36px;
-  }
-
-  .panel-tab-btn {
-    min-height: 36px;
-    font-size: 11px;
+    height: 45vh;
+    height: 45dvh;
   }
 
   .drawer-handle {
-    height: 12px;
+    height: 20px;
   }
 
   .drawer-handle::before {
-    width: 32px;
+    width: 36px;
     height: 4px;
   }
 }
 
-/* Respect the user's motion preference on the drawer's slide animation. */
+/* Respect the user's motion preference — globally, not on the two rules the
+ * old block happened to name. There are ~20 animated properties in here
+ * (modal slide-up, toast slide-up + fade, every press transform, the tier
+ * bar fill, the drawer slide, the install-button pulse); a player who asks
+ * the OS for less motion should get all of them stilled, not two. */
 @media (prefers-reduced-motion: reduce) {
-  .build-panel {
-    transition: none;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+}
 
-  .pwa-install-btn {
-    animation: none;
+/* ================================================================
+ * Coach marks / first-run guide (contract C7, built by src/ui/tutorial.js
+ * in a later phase). Styled here up-front so that module can ship DOM only:
+ *   .coach-layer      — full-viewport host, pointer-events:none per C1
+ *   .coach-backdrop   — dimmer; taps dismiss, so it opts back in
+ *   .coach-card       — the speech-bubble card, positioned by tutorial.js
+ * ================================================================ */
+
+.coach-layer {
+  position: fixed;
+  inset: 0;
+  /* Top of the scale. tutorial.js relies on this being above .modal-backdrop
+   * (see its own comment at src/ui/tutorial.js:796) so a coach mark can point
+   * at something inside an open modal. */
+  z-index: var(--z-coach);
+}
+
+.coach-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 4, 20, 0.6);
+}
+
+.coach-card {
+  position: absolute;
+  max-width: min(320px, calc(100vw - 2 * var(--spacing-lg)));
+  padding: var(--spacing-md);
+  background: var(--panel);
+  color: var(--text);
+  border: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  text-align: start;
+}
+
+.coach-card-title {
+  color: var(--accent);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+}
+
+.coach-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+/* ---------------------------------------------------------------- *
+ * The parts src/ui/tutorial.js turned out to need on top of the three
+ * classes above. Kept in the same section so the guide is one block.
+ * ---------------------------------------------------------------- */
+
+/*
+ * The dim is FOUR panels arranged around a hole, not one sheet with a
+ * cut-out, because `.coach-backdrop` is pointer-events:auto (C1) and the two
+ * action-gated steps ("open the drawer", "buy a slot machine") have to remain
+ * physically tappable. Each panel gets explicit left/top/width/height from
+ * JS, so the `inset: 0` shorthand above has to be released first: with
+ * left + right + width all set the box is over-constrained, and the browser
+ * drops the LEADING offset — i.e. `left` in RTL, which would silently mirror
+ * the whole scrim in Hebrew.
+ */
+.coach-backdrop--part {
+  inset: auto;
+}
+
+/* The highlight ring. Purely decorative, so it must not take the finger the
+ * hole exists to let through — pointer-events is inherited, and .coach-layer
+ * is `none`, so this simply never opts in. */
+.coach-spot {
+  position: absolute;
+  border: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 3px rgba(255, 183, 3, 0.25), 0 0 22px rgba(255, 183, 3, 0.45);
+  animation: coachSpotPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes coachSpotPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgba(255, 183, 3, 0.25), 0 0 22px rgba(255, 183, 3, 0.45);
   }
+  50% {
+    box-shadow: 0 0 0 6px rgba(255, 183, 3, 0.16), 0 0 30px rgba(255, 183, 3, 0.6);
+  }
+}
+
+.coach-card-body {
+  color: var(--text);
+}
+
+.coach-progress {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  /* Takes the slack so Skip/Next stay pinned to the trailing edge even on the
+   * closing card, where the counter is empty. */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.coach-card-actions .btn {
+  flex: 0 0 auto;
+}
+
+/* An action-gated step has no Next button until the player does the thing (or
+ * GATE_ESCAPE_MS passes), so this stands in for it — without it the card
+ * reads as though its primary action failed to render. */
+.coach-waiting {
+  color: var(--accent);
+  font-size: var(--fs-lg);
+  line-height: 1;
+  animation: coachWaitPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes coachWaitPulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* The opportunistic "tap the thief" card: no scrim at all (tapping the floor
+ * is the entire lesson), pinned above the collapsed drawer, centred with a
+ * physical transform so it needs no RTL branch. */
+.coach-card--hint {
+  /* Physical left + a physical transform on purpose: "centred" is the same
+   * place in both directions, and an inset-inline-start here would have to be
+   * paired with a mirrored transform to mean the same thing. */
+  left: 50%;
+  transform: translateX(-50%);
+  /* An explicit width, NOT just the inherited max-width: an absolutely
+   * positioned box with only `left` set shrink-to-fits against
+   * (container - left), so at left:50% the card would silently cap at half
+   * the viewport — measured at 206px on a 411px phone. */
+  width: min(320px, calc(100vw - 2 * var(--spacing-lg)));
+  /* Fallback only. tutorial.js overwrites this inline with the real distance
+   * to the top of the build sheet, which is 78px when it is collapsed and
+   * several hundred when the player left it open. */
+  bottom: calc(var(--drawer-collapsed-h) + var(--safe-bottom) + var(--spacing-md));
+  top: auto;
+}
+
+/* ================================================================
+ * Help / guide modal (src/ui/tutorial.js openHelp())
+ *
+ * Reuses the site-wide .modal-backdrop/.modal/.modal-title/.modal-close
+ * contract and the drawer's .panel-tabs/.panel-tab-btn tab strip rather than
+ * inventing a second visual language for the same two jobs. The only thing
+ * added here is the inner scroller: the modal itself scrolls by default,
+ * which would carry the tab strip off the top of a long page.
+ * ================================================================ */
+
+/* Width, display and direction now all come from .modal itself (--modal-w and
+ * the flex-column body recipe), which is the point: the help modal used to be
+ * the ONLY modal that declared its own width, which is how it ended up 383px
+ * wide next to a 239px Gem Shop on the same screen. All that is left here is
+ * the one thing that really is specific to this modal. */
+.help-modal {
+  /* Overrides .modal's own overflow-y:auto safety net — .help-body is the
+   * scroller, so the tabs and the replay footer stay put. */
+  overflow: hidden;
+}
+
+/* Layout wrapper, NOT a scroller: it holds the tab strip plus .help-body, and
+ * .help-body does the scrolling. Explicitly excluded from the modal-body
+ * recipe above (`:not(.help-content)`) for exactly this reason. */
+.help-content {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.help-tabs {
+  flex: 0 0 auto;
+  background: transparent;
+  border-bottom: 2px solid var(--panel-alt);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.help-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.help-tab-btn {
+  font-size: var(--fs-xs);
+  padding-inline: var(--spacing-xs);
+}
+
+/* flex/min-height/overflow/padding-block/mask all come from the shared modal
+ * body recipe near .modal-content — this only adds the inner layout. */
+.help-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.help-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--panel-alt);
+  border-radius: var(--radius-md);
+  text-align: start;
+}
+
+.help-section-title {
+  color: var(--accent);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+}
+
+.help-section-body {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.help-footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  padding-top: var(--spacing-xs);
 }
 
 /* ================================================================

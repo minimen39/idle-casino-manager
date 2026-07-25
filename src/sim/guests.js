@@ -25,7 +25,7 @@
 import { CONFIG, VENUES, STATIONS, STAFF, SYSTEMS, TIERS } from '../core/config.js';
 import { bus } from '../core/events.js';
 import { boostMult } from '../core/state.js';
-import { addMoney } from '../core/economy.js';
+import { addMoney, stationIncomeMultiplier } from '../core/economy.js';
 
 /* ------------------------------------------------------------------ *
  *  Local steering / presentation tuning (no economy balance here)
@@ -830,11 +830,16 @@ export class GuestSim {
     const lightEff = num(SYSTEMS.lighting.effectPerLevel, 0);
     const hvacEff = num(SYSTEMS.hvac.effectPerLevel, 0);
 
-    let stationBonus = 0;
-    for (const key of Object.keys(STATIONS)) {
-      if (this._countOf('station', key) > 0) {
-        stationBonus += this._levelOf('station', key) - 1;
-      }
+    // Station bonus: economy.js owns the formula (it used to be implemented
+    // here a second time, with a different one, so the floor and the HUD
+    // disagreed by ~6.5x on a levelled build). Guarded because economy.js is a
+    // sibling module and this runs every frame.
+    let stationMult = 1;
+    try {
+      const sm = stationIncomeMultiplier(ws);
+      if (Number.isFinite(sm) && sm >= 1) stationMult = sm;
+    } catch (err) {
+      stationMult = 1;
     }
 
     const m = this._mult;
@@ -843,7 +848,7 @@ export class GuestSim {
       tierIncome *
       boostMult('income') *
       this._dirtPenalty() *
-      (1 + num(CONFIG.economy.stationIncomeBonus, 0) * stationBonus);
+      stationMult;
     m.dealer =
       (1 + num(STAFF.dealers.effectPerLevel, 0) * (this._staffLevel('dealers') - 1)) *
       boostMult('dealer');
@@ -1245,11 +1250,25 @@ export class GuestSim {
     return this._enqueue(g, node, 'queueCashout');
   }
 
+  /**
+   * Rough bankroll a guest needs before this venue is worth walking to.
+   *
+   * Billed as ONE wager beat, not a whole seat-session. Charging the full
+   * serviceTime made the VIP room unreachable in world 0: 1700 baseIncome / 2
+   * seats * 26 s = 22,100, while the richest possible world-0 guest (a VIP:
+   * rand(90,720) * vipWealthMult 9, then chipsFraction 0.75) tops out at 4,860
+   * chips — under the affordCutoff for EVERY guest that can exist, so a
+   * 450,000 purchase bought a permanently empty building. A guest only ever
+   * stakes wagerFraction of their chips per beat anyway, so the beat is the
+   * honest unit; the relative ordering between venues is unchanged because
+   * every venue is rescaled by the same playBeat/serviceTime idea.
+   */
   _venueRequirement(node) {
     const def = node.def;
     const level = this._levelOf('venue', node.key);
     const perGuest = this._unitIncome(def, level) / Math.max(1, num(def.capacity, 1));
-    return Math.max(num(CONFIG.guest.wagerMin, 3), perGuest * node.serviceTime);
+    const beat = Math.max(1, num(CONFIG.guest.playBeat, 1.6));
+    return Math.max(num(CONFIG.guest.wagerMin, 3), perGuest * beat);
   }
 
   _goGamble(g) {

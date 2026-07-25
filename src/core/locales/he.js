@@ -1,9 +1,19 @@
 /**
  * he.js — Hebrew locale (the game's original language).
  *
- * Every value here is the EXACT string that used to be hard-coded in the UI
- * modules / config.js, so nothing regresses for existing Hebrew players.
  * Flat keys only. Must stay key-for-key identical to en.js.
+ *
+ * REGISTER (one register, no exceptions): the game speaks to ONE player, so
+ * every instruction is second-person masculine SINGULAR — 'קנה', 'שדרג',
+ * 'אסוף', 'פתח', 'התחבר'. The file used to mix in polite plurals ('נהלו',
+ * 'פתחו', 'הקישו') on the PWA/shell strings, which read like a group briefing
+ * two lines below a 'קנה' button. Anything added here follows the singular.
+ * Impersonal/generic phrasing ('מגייסים', 'קונים') is fine — it is not a
+ * second register, it is the same voice describing a habit.
+ *
+ * No English words inside Hebrew strings (the titles used to read
+ * 'רולטה — High Roller'), and no glossing in parentheses on buttons.
+ * 'בלאקג׳ק' is spelled as one word everywhere.
  *
  * Placeholders interpolate as {name} — see i18n.js `t(key, params)`.
  */
@@ -12,11 +22,15 @@ export default {
   /* ---------------------------------------------------------------- *
    *  App shell (index.html, manifest, boot screen)
    * ---------------------------------------------------------------- */
-  'app.title': 'Idle Casino Manager - מנהל קזינו סרק',
+  // Tab title / task switcher. One language only — it used to carry the
+  // English brand AND a Hebrew name in the same line.
+  'app.title': 'מנהל קזינו',
   'app.name': 'מנהל קזינו — אימפריית הימורים',
   'app.shortName': 'מנהל קזינו',
-  'app.description': 'נהלו את הקזינו שלכם, בנו אולם משחקים תוסס, גייסו צוות ופתחו את אימפריית ההימורים שלכם במשחק סרק איזומטרי.',
-  'app.noscript': 'המשחק דורש JavaScript מופעל כדי לרוץ. אנא הפעילו JavaScript בדפדפן שלכם וטענו מחדש את הדף.',
+  'app.description': 'נהל את הקזינו שלך, מלא את האולם במשחקים, גייס צוות ובנה אימפריית הימורים במשחק סרק איזומטרי.',
+  // Mirrored as a literal in index.html's <noscript> — a crawler and a
+  // JS-disabled browser never reach this table. Keep the two in step.
+  'app.noscript': 'המשחק דורש JavaScript כדי לרוץ. הפעל JavaScript בדפדפן וטען מחדש את הדף.',
   'app.loading': 'טוען קזינו…',
 
   /* ---------------------------------------------------------------- *
@@ -59,7 +73,10 @@ export default {
    *  HUD
    * ---------------------------------------------------------------- */
   'hud.money': 'קופה:',
-  'hud.income': 'הכנסה/שנייה:',
+  // The noun only. hud.js appends unit.perSecond to the VALUE ("1.2K/ש׳"), so
+  // 'הכנסה/שנייה:' printed the unit twice — and it was the longest chip in a
+  // bar that has no room to spare on a 411px phone.
+  'hud.income': 'הכנסה:',
   'hud.diamonds': 'יהלומים:',
   'hud.guests': 'אורחים:',
   'hud.tier': 'דרגה',
@@ -102,6 +119,15 @@ export default {
   'action.blackjackTitle': 'מיני-משחק בלאקג׳ק',
   'action.shop': '💎 חנות',
   'action.shopTitle': 'חנות יהלומים',
+  // The guide's entry point (main.js mountActionBar). A PLAIN TYPOGRAPHIC '?',
+  // not the ❓ emoji it used to be: an emoji carries its own colour from the
+  // font, so it ignored .action-btn--help's quiet `--btn-fg` and rendered as
+  // the loudest thing on screen. As text, CSS owns its colour.
+  // Hebrew uses the same '?' character as Latin, and it is bidi-neutral (not a
+  // mirrored pair like parentheses), so it renders identically inside the RTL
+  // dock; the accessible name still comes from action.helpTitle.
+  'action.help': '?',
+  'action.helpTitle': 'איך משחקים',
 
   /* ---------------------------------------------------------------- *
    *  World map modal
@@ -200,6 +226,21 @@ export default {
   'system.lighting.desc': 'תאורה נכונה מרגיעה תורים ומעלה את הנטייה של האורחים להמר.',
 
   /* ---------------------------------------------------------------- *
+   *  Canvas actor markers (renderer.js MARK table).
+   *  These are drawn as 11px nameplates over a figure's head, so they must
+   *  stay SHORT — the renderer drops a plate that would overlap a neighbour.
+   *  Role nouns, not sentences; the drawer's staff.* names are the long form.
+   * ---------------------------------------------------------------- */
+  'role.dealer.name': 'דילר',
+  'role.guard.name': 'מאבטח',
+  'role.cleaner.name': 'ניקיון',
+  'role.vipGuest.name': 'אורח VIP',
+  // Shown instead of the role when the STATE is the actionable thing.
+  'state.guard.responding': 'בדרך לאירוע',
+  'state.dealer.idle': 'ללא שולחן',
+  'state.guest.angry': 'זועם',
+
+  /* ---------------------------------------------------------------- *
    *  Mini-games — shared
    * ---------------------------------------------------------------- */
   'mini.cooldown': 'המשחק יהיה זמין שוב בעוד:',
@@ -207,7 +248,7 @@ export default {
   /* ---------------------------------------------------------------- *
    *  Mini-game — roulette
    * ---------------------------------------------------------------- */
-  'mini.roulette.title': 'רולטה — High Roller',
+  'mini.roulette.title': 'רולטה — מהמר כבד',
   'mini.roulette.betAmount': 'הימור קבוע: {amount}',
   'mini.roulette.spin': 'סובב',
   'mini.roulette.bet.red': 'אדום',
@@ -216,6 +257,8 @@ export default {
   'mini.roulette.bet.odd': 'אי-זוגי',
   'mini.roulette.bet.dozen': 'תריסר',
   'mini.roulette.bet.single': 'מספר בודד',
+  // Payout multiplier appended to each bet button ("אדום (×2)").
+  'mini.roulette.payoutTag': '(×{mult})',
   'mini.roulette.dozen.1': '1-12',
   'mini.roulette.dozen.2': '13-24',
   'mini.roulette.dozen.3': '25-36',
@@ -229,29 +272,40 @@ export default {
   'mini.roulette.noMoney': 'אין מספיק כסף להימור',
   'mini.roulette.straight': 'פגיעה במספר בודד! +{amount} יהלומים',
   'mini.roulette.result': 'יצא {number} ({color})',
-  'mini.roulette.win': 'ניצחת! זכייה אפשרית: {amount}',
+  // Not 'זכייה אפשרית' — settleRouletteBet already paid it.
+  'mini.roulette.win': 'ניצחת! זכייה: {amount}',
   'mini.roulette.lose': 'הפסדת את ההימור.',
   'mini.roulette.takeCash': 'קח מזומן',
   'mini.roulette.gotCash': 'קיבלת {amount}',
   'mini.roulette.takeBoost': 'קח בוסט הכנסה ×{mult}',
   'mini.roulette.boostOn': 'בוסט הכנסה פעיל!',
+  // The stake is settled the moment the wheel is spun, so the payout is
+  // already in the wallet. These two say so: `banked` under the win line
+  // (turning the choice into "keep this or trade it in"), `autoCollected` as a
+  // toast when the modal is closed before the wheel finished.
+  'mini.roulette.banked': 'כבר נכנס לקופה: {amount}',
+  'mini.roulette.autoCollected': 'הזכייה נכנסה לקופה: {amount}',
+  'mini.roulette.keepCash': 'השאר במזומן',
+  'mini.roulette.swapBoost': 'החלף בהכנסה ×{mult}',
 
   /* ---------------------------------------------------------------- *
    *  Mini-game — blackjack
    * ---------------------------------------------------------------- */
-  'mini.blackjack.title': 'בלאק ג׳ק — Dealer Challenge',
+  'mini.blackjack.title': 'בלאקג׳ק — אתגר הדילר',
   'mini.blackjack.intro': 'יד אחת מול הדילר הראשי. הדילר עוצר על {value}.',
   'mini.blackjack.start': 'התחל יד',
   'mini.blackjack.dealer': 'דילר',
   'mini.blackjack.dealerScore': 'דילר ({value})',
-  'mini.blackjack.player': 'שחקן ({value})',
-  'mini.blackjack.hit': 'משוך (Hit)',
-  'mini.blackjack.stand': 'עצור (Stand)',
-  'mini.blackjack.blackjack': 'בלאק ג׳ק! ניצחון מושלם',
+  // 'אתה', not 'שחקן': the other side of the table is the player himself.
+  'mini.blackjack.player': 'אתה ({value})',
+  // No English glossing in parentheses — it also blew the button width.
+  'mini.blackjack.hit': 'קח קלף',
+  'mini.blackjack.stand': 'עצור',
+  'mini.blackjack.blackjack': 'בלאקג׳ק! יד מושלמת',
   'mini.blackjack.win': 'ניצחת!',
   'mini.blackjack.push': 'תיקו',
-  'mini.blackjack.bust': 'פסטת — הפסד',
-  'mini.blackjack.dealerBlackjack': 'לדילר בלאק ג׳ק — הפסד',
+  'mini.blackjack.bust': 'נשרפת — הפסד',
+  'mini.blackjack.dealerBlackjack': 'לדילר בלאקג׳ק — הפסד',
   'mini.blackjack.lose': 'הפסדת',
   'mini.blackjack.pushToast': 'תיקו! קיבלת {amount} יהלומים',
   'mini.blackjack.loseToast': 'הפסדת את היד',
@@ -261,23 +315,30 @@ export default {
   'mini.blackjack.dealerBoostOn': 'בוסט לדילרים פעיל!',
   'mini.blackjack.takeCash': 'קח מזומן',
   'mini.blackjack.gotCash': 'קיבלת {amount}',
+  // Closing a won hand used to burn the 15-minute cooldown and pay nothing;
+  // the default reward (gems) is now granted on the way out and announced here.
+  'mini.blackjack.autoCollected': 'קיבלת את הפרס: {amount} 💎',
 
   /* ---------------------------------------------------------------- *
    *  Shop (IAP simulation)
    * ---------------------------------------------------------------- */
   'shop.title': 'חנות יהלומים',
   'shop.section.packs': 'קניית יהלומים',
-  'shop.section.specials': 'הנחות מיוחדות',
+  // 'מבצעים', not 'הנחות': the section sells a one-time unlock, not a discount.
+  'shop.section.specials': 'מבצעים מיוחדים',
   'shop.section.spend': 'הוצאת יהלומים',
   'shop.pack.small': 'חופן יהלומים',
   'shop.pack.medium': 'שק יהלומים',
   'shop.pack.large': 'כספת יהלומים',
   'shop.pack.mega': 'מכרה יהלומים',
-  'shop.price.small': '₪9.90',
-  'shop.price.medium': '₪39.90',
-  'shop.price.large': '₪99.90',
-  'shop.price.mega': '₪299.90',
-  'shop.price.noAds': '₪19.90',
+  // NO shop.price.* keys, still. Prices are not translatable strings: when they
+  // lived here, each table held an unrelated bare number and nothing tied a
+  // pack's two prices together, so they drifted. They now live in
+  // CONFIG.monetization.pricing as ONE price set per currency, and
+  // priceSetFor(locale) hands monetization.js the whole set at once.
+  // The owner's rule IS that currency follows the language (₪ for Hebrew,
+  // $ for English), but it switches as a complete set — a language toggle can
+  // never re-price one product against its neighbours the way it used to.
   'shop.noAds': 'ללא פרסומות',
   'shop.noAdsTag': '🚫📺 חד-פעמי',
   'shop.noAdsDone': '✓ פרסומות הופסקו! תודה על התמיכה.',
@@ -291,20 +352,25 @@ export default {
   'shop.cooldownReset': '✓ זמני הצינון אופסו',
   'shop.gotCash': '✓ קיבלת {amount} מזומן',
   'shop.megaBoostOn': '✓ בוסטר ×5 הופעל ל-10 דקות',
-  'shop.purchased': '✓ רכוש',
+  // '✓ נרכש' — the old '✓ רכוש' is the noun 'property' / the imperative
+  // 'acquire!', not 'purchased'. The `.shop-item.purchased::after` badge
+  // renders `content: attr(data-badge)`, so whoever adds the class must set
+  // data-badge to this string; the stylesheet holds no copy of its own.
+  'shop.purchased': '✓ נרכש',
 
   /* ---------------------------------------------------------------- *
    *  Rewarded ads
    * ---------------------------------------------------------------- */
-  'ad.title': 'צפיה בפרסומת',
-  'ad.label': 'סיים את הצפיה וקבל גמול!',
+  'ad.title': 'צפייה בפרסומת',
+  'ad.label': 'סיים את הצפייה וקבל את הפרס!',
   'ad.skip': 'דלג',
   'ad.reward': '🎬 קיבלת בונוס פרסומת! +{amount} יהלומים ו-2x הכנסה',
-  'ad.noAdsOwned': 'יש לך את ההנחה "ללא פרסומות"',
-  'ad.cooldown': 'צפיה בפרסומת זמינה ב-{seconds} שניות',
+  'ad.noAdsOwned': 'כבר רכשת את חבילת "ללא פרסומות"',
+  'ad.cooldown': 'הפרסומת הבאה זמינה בעוד {seconds} שניות',
   'ad.button': '🎬 פרסומת',
   'ad.buttonTitle': 'צפה בפרסומת לבונוס',
-  'ad.buttonCooldown': 'זמין בעוד {seconds}s',
+  // 'שנ׳' (unit.secondsShort), not a bare English 's'.
+  'ad.buttonCooldown': 'זמין בעוד {seconds} שנ׳',
 
   /* ---------------------------------------------------------------- *
    *  Offline earnings
@@ -327,11 +393,12 @@ export default {
   'event.thief.staff': 'המאבטחים תפסו את הגנב! +{amount}',
   'event.thief.escape': 'הגנב ברח עם {amount}',
 
-  'event.brinks.label': 'ברינקס',
-  'event.brinks.spawn': 'ברינקס הגיע לאסוף את הקופה.',
+  // 'רכב מיגון', not the Brink's brand name (en.js says 'Armored Car').
+  'event.brinks.label': 'רכב מיגון',
+  'event.brinks.spawn': 'רכב המיגון הגיע לאסוף את הקופה.',
   'event.brinks.done': 'הקופה הועברה בבטחה. +{amount}',
   'event.brinks.escort': 'ליווית את הסבלים עד היציאה! +{amount}',
-  'event.brinks.robbed': 'שוד! הברינקס נשדד ונלקחו {amount}',
+  'event.brinks.robbed': 'שוד! רכב המיגון נשדד ונלקחו {amount}',
 
   'event.robber.label': 'שודד',
   'event.robber.spawn': 'שודד מנסה לחטוף את המשלוח!',
@@ -363,11 +430,81 @@ export default {
   'pwa.installing': 'מתקין את המשחק…',
   'pwa.installed': 'המשחק הותקן! אפשר לפתוח אותו ממסך הבית 🎰',
   'pwa.update': 'גרסה חדשה של המשחק זמינה',
-  'pwa.updateToast': 'גרסה חדשה זמינה — הקישו רענן',
+  'pwa.updateToast': 'גרסה חדשה זמינה — הקש רענן',
   'pwa.refresh': 'רענן',
-  'pwa.helpInApp': 'הדף נפתח בדפדפן פנימי (למשל בתוך WhatsApp) שלא יכול להתקין אפליקציות ולא שומר את ההתקדמות באותו מקום. פתחו את תפריט ⋮ ובחרו "פתח בדפדפן" (Chrome), ואז בתפריט ⋮ של Chrome בחרו "התקנת אפליקציה".',
-  'pwa.helpChrome': 'פתחו את תפריט ⋮ של Chrome ובחרו "התקנת אפליקציה" כדי להוסיף את המשחק למסך הבית.',
+  // The Refresh button's busy state. NOT hud.loading ('טוען…'): the pending
+  // version is being applied, nothing is loading — and 'טוען…' on a Refresh
+  // button reads as if the game itself is starting over.
+  'pwa.updating': 'מעדכן…',
+  'pwa.helpInApp': 'הדף נפתח בדפדפן פנימי (למשל בתוך WhatsApp) שלא יכול להתקין אפליקציות ולא שומר את ההתקדמות באותו מקום. פתח את תפריט ⋮ ובחר "פתח בדפדפן" (Chrome), ואז בתפריט ⋮ של Chrome בחר "התקנת אפליקציה".',
+  'pwa.helpChrome': 'פתח את תפריט ⋮ של Chrome ובחר "התקנת אפליקציה" כדי להוסיף את המשחק למסך הבית.',
+  // Quoted verbatim by sw.js's last-resort offline page (it cannot import an
+  // ES module). Change one and change the other — see sw.js offlineFallbackPage().
   'pwa.offlineTitle': 'לא זמין',
   'pwa.offlineLine1': 'המשחק אינו זמין במצב לא מקוון.',
-  'pwa.offlineLine2': 'התחברו לרשת ונסו שוב.'
+  'pwa.offlineLine2': 'התחבר לרשת ונסה שוב.',
+
+  /* ---------------------------------------------------------------- *
+   *  First-run guide (src/ui/tutorial.js coach marks)
+   * ---------------------------------------------------------------- */
+  'tutorial.next': 'הבא',
+  'tutorial.skip': 'דלג',
+  'tutorial.progress': '{current} מתוך {total}',
+  'tutorial.finish': 'קדימה, לשחק',
+  'tutorial.replay': 'הרץ את המדריך מחדש',
+
+  'tutorial.step.welcome.title': 'ברוך הבא לאולם',
+  'tutorial.step.welcome.body': 'אורחים נכנסים, ממירים מזומן לצ׳יפים, מהמרים — ומכל הימור נשאר לבית אחוז. התפקיד שלך הוא לפנות כל צוואר בקבוק בדרך.',
+  'tutorial.step.money.title': 'קופה והכנסה',
+  'tutorial.step.money.body': 'הקופה שייכת לסניף הזה בלבד — לכל קזינו שלך קופה משלו. ההכנסה היא מה שהאולם מרוויח בכל שנייה, איתך או בלעדיך. היהלומים משותפים לכל האימפריה.',
+  'tutorial.step.tier.title': 'הדרגה נמדדת בהוצאות',
+  'tutorial.step.tier.body': 'הדרגה נקבעת לפי כמה השקעת בסניף, לא לפי כמה כסף צברת. תמשיך לקנות: כל דרגה מחדשת את מראה האולם ומעלה את כל ההכנסות.',
+  'tutorial.step.drawer.title': 'מגירת הבנייה',
+  'tutorial.step.drawer.body': 'כל מה שאפשר לבנות, לגייס ולשדרג נמצא מאחורי הידית הזאת. החלק אותה למעלה כדי לפתוח את המגירה.',
+  'tutorial.step.slots.title': 'קנה את המכונה הראשונה',
+  'tutorial.step.slots.body': 'סלוטים זולים, לא צריכים דילר ומכניסים כל היום. קנה אחד — האולם מסדר את עצמו, אתה לא מציב שום דבר ידנית.',
+  'tutorial.step.cashier.title': 'הקופה היא צוואר הבקבוק',
+  'tutorial.step.cashier.body': 'כל אורח ממיר כאן מזומן לצ׳יפים לפני שהוא מהמר, ופודה בחזרה בדרך החוצה. קופה אחת פירושה תור אחד, וכשהסבלנות נגמרת הם יוצאים בלי להמר אגורה. הוסף קופאים ברגע שהתור מתארך.',
+  'tutorial.step.dealers.title': 'קודם דילר, אחר כך שולחן',
+  'tutorial.step.dealers.body': 'בלאקג׳ק, רולטה, קרפס, גלגל המזל וחדר ה-VIP — כל אחד מהם צריך דילר משלו. שולחן בלי דילר לא מכניס כלום, אז קודם מגייסים ורק אחר כך קונים.',
+  // Not part of the numbered sequence: a one-off card shown the first time the
+  // player is free to poke at the floor itself.
+  'tutorial.step.tap.title': 'לחץ על האולם',
+  'tutorial.step.tap.body': 'לחיצה על אורח מכניסה טיפ. וכשמופיע גנב, סופר קלפים או לקוח זועם — לחץ עליו לפני שהוא נעלם. כל אחד שבורח עולה לך כסף.',
+  'tutorial.doneTitle': 'הקזינו בידיים שלך',
+  // Quotes the glyph the dock actually shows now (action.help), not the old ❓.
+  'tutorial.doneBody': 'זה כל הלופ. כל השאר מחכה לך בכפתור "?" בכל רגע.',
+
+  /* ---------------------------------------------------------------- *
+   *  Help modal (the reopenable "?" guide, four tabbed pages)
+   * ---------------------------------------------------------------- */
+  'help.title': 'איך משחקים',
+  'help.tab.loop': 'הלופ',
+  'help.tab.build': 'בנייה',
+  'help.tab.floor': 'באולם',
+  'help.tab.empire': 'האימפריה',
+
+  'help.loop.title': 'הלופ המרכזי',
+  'help.loop.body': 'אורח נכנס, עובר בידוק בכניסה, ממיר מזומן לצ׳יפים בקופה, משחק עד שהסבלנות או האנרגיה נגמרות, מתאושש בבר, בבופה או באולם ההופעות, ואז פודה את הצ׳יפים ויוצא. מכל הימור נשאר לבית אחוז — האחוז הזה הוא ההכנסה שלך.',
+  'help.currency.title': 'קופה ויהלומים',
+  'help.currency.body': 'הקופה היא לפי סניף: לכל קזינו שלך קופה נפרדת, וסניף שאתה לא צופה בו ממשיך להרוויח בחצי קצב. היהלומים משותפים לכל האימפריה וקונים בהם איפוס זמני צינון, מזומן מיידי ובוסטים גדולים.',
+
+  'help.build.title': 'מתחמים, עמדות, צוות ומערכות',
+  'help.build.body': 'מתחמים או מכניסים כסף (אלה של ההימורים) או מטעינים את האורחים (בר, בופה, אולם הופעות). העמדות הן הזרימה: בידוק בכניסה, קופת הצ׳יפים, ועמדת הפריטה שמזינה את הסלוטים. הצוות הוא הדילרים, המאבטחים, עובדי הניקיון והמצלמות. המערכות הן מיזוג ותאורה, שמשאירות את האורחים באולם יותר זמן. כל רכישה מוצבת מעצמה — אין הצבה ידנית.',
+  'help.dealers.title': 'שולחנות צריכים דילרים',
+  'help.dealers.body': 'בלאקג׳ק, רולטה, קרפס, גלגל המזל וחדר VIP — דילר אחד לכל שולחן. אם יש יותר שולחנות מדילרים, העודפים פשוט עומדים ריקים ולא מכניסים כלום. קודם מגייסים.',
+  'help.tier.title': 'דרגות',
+  'help.tier.body': 'לכל סניף שלוש דרגות, ממתחם מוזנח ועד מתחם יוקרה. עולים בדרגה לפי סך ההוצאות בסניף, לא לפי החיסכון, ואף פעם לא יורדים בחזרה. כל דרגה מחדשת את מראה האולם ומכפילה את ההכנסה.',
+
+  'help.events.title': 'אירועים בזמן אמת',
+  'help.events.body': 'גנבים, סופרי קלפים, לקוחות זועמים, איסוף כסף ברכב מיגון ואורחי VIP מופיעים באולם בזמן שאתה משחק. לחיצה עליהם מטפלת בהם מיד ומזכה בפרס המלא; המאבטחים והמצלמות יגיעו לבד — לאט יותר ובתמורה קטנה יותר. כל אחד שבורח עולה לך בכסף או הורס את האווירה.',
+  'help.tips.title': 'טיפים ומצלמה',
+  'help.tips.body': 'לחיצה על אורח מכניסה טיפ ומוסיפה לו קצת סבלנות. גרירה מזיזה את התצוגה, צביטה מקרבת ומרחיקה, וכפתור ⛶ מחזיר את כל האולם למסך.',
+  'help.minigames.title': 'מיני-משחקים',
+  'help.minigames.body': 'רולטה ובלאקג׳ק נפתחים אחת ל-15 דקות כל אחד. ברולטה ההימור הוא נתח קבוע מההכנסה שלך — בהתחלה זו כמעט כל הקופה, אז אל תסובב על סכום שאתה לא יכול להרשות לעצמך להפסיד. בלאקג׳ק משלם ביהלומים ובבוסט לדילרים במקום במזומן.',
+
+  'help.worlds.title': 'סניפים חדשים',
+  'help.worlds.body': 'שישה סניפים, נפתחים לפי הסדר, וכל אחד רווחי בהרבה מקודמו. הכסף מכל הסניפים שבבעלותך נספר לטובת הסניף הבא, וכולם ממשיכים להרוויח במקביל — אף פעם לא מתחילים מהתחלה. הראשון, דאונטאון וגאס, נפתח ב-200,000: זה רחוק מהמכונה הראשונה שלך, וזה בכוונה.',
+  'help.offline.title': 'כשאתה לא במשחק',
+  'help.offline.body': 'הקזינו ממשיך להרוויח גם כשהוא סגור, בחצי קצב, עד 8 שעות. תחזור ותאסוף — צפייה בפרסומת מכפילה את הסכום.'
 };

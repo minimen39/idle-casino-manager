@@ -8,11 +8,11 @@
  * NO actual payments or external network calls — all simulated.
  */
 
-import { CONFIG } from '../core/config.js';
+import { CONFIG, priceSetFor } from '../core/config.js';
 import { bus, toast } from '../core/events.js';
 import { state, save, multiplyOfflineReward } from '../core/state.js';
 import { addMoney, incomeRate, fmtMoney } from '../core/economy.js';
-import { t, onLocaleChanged } from '../core/i18n.js';
+import { t, getLocale, onLocaleChanged } from '../core/i18n.js';
 
 /* ================================================================
  *  Module State
@@ -24,6 +24,9 @@ let adModal = null;
 let adBackdrop = null;
 let shopModal = null;
 let shopBackdrop = null;
+/** The scrolling `.shop-container` of the open shop, kept so a rebuild can
+ *  restore where the player was (see showShop()). */
+let shopContentEl = null;
 let adTimerInterval = null;
 let adCountdown = 3;
 let lastAdTime = 0;
@@ -53,6 +56,53 @@ function storageSafe(fn, fallback) {
   } catch (err) {
     return fallback;
   }
+}
+
+/** Symbols for the plain-text fallback below, when Intl is unavailable. */
+const CURRENCY_FALLBACK_SYMBOL = { ILS: '₪', USD: '$' };
+
+/**
+ * The real-money price set for the CURRENT language: shekels for Hebrew,
+ * dollars for English (CONFIG.monetization.localeCurrency).
+ *
+ * Read fresh on every render rather than cached at module load, which is what
+ * makes the live language switch re-price the shop: onLocaleChanged() in
+ * mount() rebuilds the open shop, and that rebuild picks up the other set.
+ * The amounts still never come from the locale TABLES — a price is a property
+ * of the product in a market, not a translatable string.
+ */
+function prices() {
+  return priceSetFor(getLocale());
+}
+
+/**
+ * Render an IAP price.
+ *
+ * Both the amount and the currency come from CONFIG.monetization.pricing via
+ * prices() above; only the *presentation* (digit shapes, symbol placement) is
+ * Intl's job. `-u-nu-latn` pins Western digits — Hebrew reads prices in them —
+ * and a failing/unsupported Intl falls back to a plain "9.90 ₪" / "1.99 $"
+ * shaped string rather than leaving the button blank.
+ *
+ * @param {number} minor price in minor units (agorot / cents)
+ * @param {string} currency ISO code the amount is denominated in
+ * @returns {string}
+ */
+function fmtPrice(minor, currency) {
+  const cents = Number(minor);
+  if (!Number.isFinite(cents) || cents < 0) return '';
+  const units = cents / 100;
+  const code = currency || CONFIG.monetization.defaultCurrency;
+  return storageSafe(
+    () =>
+      new Intl.NumberFormat(getLocale() + '-u-nu-latn', {
+        style: 'currency',
+        currency: code,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(units),
+    units.toFixed(2) + ' ' + (CURRENCY_FALLBACK_SYMBOL[code] || code)
+  );
 }
 
 /** Restore the last-ad timestamp so a page reload cannot grant a free ad. */
@@ -114,6 +164,33 @@ function closeShop() {
   if (shopBackdrop && shopBackdrop.parentNode) shopBackdrop.parentNode.removeChild(shopBackdrop);
   shopBackdrop = null;
   shopModal = null;
+  shopContentEl = null;
+}
+
+/**
+ * Every purchase/spend re-runs showShop(), which tears the modal down and
+ * builds a brand new one — so the player's scroll position was thrown away and
+ * they were snapped back to the diamond packs at the top, mid-list. Whichever
+ * of the two boxes actually scrolls (styles.css owns that choice), read it
+ * before the teardown and put it back after the rebuild.
+ */
+function readShopScroll() {
+  const modalTop = shopModal && Number(shopModal.scrollTop);
+  const contentTop = shopContentEl && Number(shopContentEl.scrollTop);
+  return {
+    modal: Number.isFinite(modalTop) ? modalTop : 0,
+    content: Number.isFinite(contentTop) ? contentTop : 0
+  };
+}
+
+function restoreShopScroll(prev) {
+  if (!prev) return;
+  try {
+    if (shopModal && prev.modal > 0) shopModal.scrollTop = prev.modal;
+    if (shopContentEl && prev.content > 0) shopContentEl.scrollTop = prev.content;
+  } catch (err) {
+    // a detached node must never break the shop
+  }
 }
 
 function canWatchAd() {
@@ -289,6 +366,7 @@ function completeAd() {
  * ================================================================ */
 
 function showShop() {
+  const prevScroll = readShopScroll();
   closeShop();
 
   const backdrop = document.createElement('div');
@@ -324,12 +402,15 @@ function showShop() {
   const diamondGrid = document.createElement('div');
   diamondGrid.className = 'shop-grid';
 
+  // One price set for the whole shop, so every tag in this render is in the
+  // same currency even if the language changed mid-build.
+  const priceSet = prices();
+
   for (const pack of CONFIG.monetization.diamondPacks) {
-    // Names/prices come from the locale tables (keyed by pack.key), not from
-    // config.js's `name`/`price` fields — config.js is Hebrew-only and out of
-    // scope for this module; CONFIG here only supplies amount/cost/etc.
+    // The NAME comes from the locale table (keyed by pack.key); the PRICE comes
+    // from CONFIG's price set for the active language — see fmtPrice().
     const packName = t('shop.pack.' + pack.key);
-    const packPrice = t('shop.price.' + pack.key);
+    const packPrice = fmtPrice(priceSet.packs[pack.key], priceSet.currency);
 
     const item = document.createElement('button');
     item.className = 'shop-item';
@@ -386,7 +467,7 @@ function showShop() {
 
     const noAdsPrice = document.createElement('div');
     noAdsPrice.className = 'shop-item-price';
-    noAdsPrice.textContent = t('shop.price.noAds');
+    noAdsPrice.textContent = fmtPrice(priceSet.noAds, priceSet.currency);
     noAdsItem.appendChild(noAdsPrice);
 
     noAdsItem.addEventListener('click', () => {
@@ -463,6 +544,8 @@ function showShop() {
 
   shopModal = modal;
   shopBackdrop = backdrop;
+  shopContentEl = content;
+  restoreShopScroll(prevScroll);
 }
 
 function purchaseDiamonds(amount, name) {

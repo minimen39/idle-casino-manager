@@ -53,6 +53,13 @@ function growthMult(growth, exponent) {
 const BASE_WORKER_SPEED =
   CONFIG.guest && Number.isFinite(CONFIG.guest.walkSpeed) ? CONFIG.guest.walkSpeed : 42;
 
+/** A dealer crossing the floor is the one piece of staff motion the player is
+ * meant to READ. At the guest pace (and once the phone's ~0.5 fit-zoom has
+ * shrunk it) a table-to-table hop takes 6-11s and looks like another guest
+ * shuffling in line, so dealers get a purposeful stride. Guards deliberately
+ * keep their own 1.3x: liveEvents.js balance depends on their response time. */
+const DEALER_WALK_MULT = 1.55;
+
 function speedForRole(role, level) {
   const lvl = Math.max(1, Math.floor(level) || 1);
   if (role === 'guard') {
@@ -63,7 +70,51 @@ function speedForRole(role, level) {
     const bonus = 1 + STAFF.cleaners.effectPerLevel * (lvl - 1);
     return BASE_WORKER_SPEED * 0.7 * bonus; // cleaners amble
   }
-  return BASE_WORKER_SPEED; // dealers walk at the normal guest pace between tables
+  // No level scaling for dealers: STAFF.dealers.effectPerLevel is table OUTPUT,
+  // not pace, and a levelled-up dealer sprinting the floor would read as a bug.
+  return BASE_WORKER_SPEED * DEALER_WALK_MULT; // dealers stride between tables
+}
+
+/* ------------------------------------------------------------------ *
+ *  Shift rotation tuning
+ *
+ *  A dealer used to claim one table at spawn and never re-target, so it
+ *  performed exactly ONE walk per session and then stood still forever. These
+ *  numbers give it a reason to move without making the floor look twitchy:
+ *  a post is held for most of a minute, and the jitter is rolled per worker so
+ *  a room full of dealers never changes shift in lockstep.
+ * ------------------------------------------------------------------ */
+
+const SHIFT_MIN_SECONDS = 22;
+const SHIFT_MAX_SECONDS = 38;
+/** Don't drag a colleague off a post they only just reached — that reads as
+ * twitchy rather than as a shift change. */
+const MIN_SWAP_SHIFT = SHIFT_MIN_SECONDS * 0.5;
+/** Retry gap when nobody is swappable yet (rather than serving a full shift). */
+const SHIFT_RETRY_SECONDS = SHIFT_MIN_SECONDS * 0.3;
+/** A dealer only leaves the floor entirely when a colleague can take the post. */
+const BREAK_MIN_SECONDS = 3;
+const BREAK_MAX_SECONDS = 6;
+/** Distance penalty (world px) on the post a dealer just left, so "nearest free
+ * table" never hands it straight back and cancels the walk the player saw. */
+const REVISIT_PENALTY = CONFIG.grid.tile * 10;
+
+function rollShift() {
+  return SHIFT_MIN_SECONDS + Math.random() * (SHIFT_MAX_SECONDS - SHIFT_MIN_SECONDS);
+}
+
+function rollBreak() {
+  return BREAK_MIN_SECONDS + Math.random() * (BREAK_MAX_SECONDS - BREAK_MIN_SECONDS);
+}
+
+/** One full stride, in world px — `walkPhase` advances by 1 per stride so a
+ * renderer walk cycle stays locked to distance covered, not to wall time. */
+const STRIDE_PX = Math.max(1, CONFIG.grid.tile * 0.8);
+
+/** Cardinal heading in WORLD space (y grows south), for the renderer. */
+function cardinalOf(dx, dy) {
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'e' : 'w';
+  return dy >= 0 ? 's' : 'n';
 }
 
 /** Longest live-event actor lifetime, used as a defensive timeout so a guard
@@ -137,6 +188,43 @@ function nodeForSlot(layout, slot, tile) {
   return centerOfSlot(slot, tile);
 }
 
+/** Guarded `layout.walk[row][col]` lookup — walk is indexed [y][x]. */
+function isWalkable(layout, gx, gy) {
+  const walk = layout && Array.isArray(layout.walk) ? layout.walk : null;
+  if (!walk) return false;
+  const row = walk[gy];
+  return Array.isArray(row) && row[gx] === true;
+}
+
+/**
+ * Where a dealer actually STANDS to work a table.
+ *
+ * `layout.nodeFor()` returns the *queue* cell — the cell just SOUTH of the
+ * footprint, which is exactly where guests line up — so a dealer posted there
+ * is buried in the customer line ~11 world px from the head of the queue. The
+ * baked table art reserves the far (-y) edge for the dealer, so prefer the cell
+ * just north of the footprint, then the two flanks, and only fall back to the
+ * queue node when the floor plan leaves nothing else walkable.
+ */
+function dealerPostForSlot(layout, slot, tile) {
+  const w = Number.isFinite(slot.w) ? slot.w : 1;
+  const h = Number.isFinite(slot.h) ? slot.h : 1;
+  const x0 = Number.isFinite(slot.x) ? slot.x : 0;
+  const y0 = Number.isFinite(slot.y) ? slot.y : 0;
+  const midX = x0 + Math.floor(w / 2);
+  const midY = y0 + Math.floor(h / 2);
+
+  const candidates = [
+    { x: midX, y: y0 - 1 },      // north: the dealer crescent the art draws
+    { x: x0 - 1, y: midY },      // west flank
+    { x: x0 + w, y: midY }       // east flank
+  ];
+  for (const c of candidates) {
+    if (isWalkable(layout, c.x, c.y)) return { x: (c.x + 0.5) * tile, y: (c.y + 0.5) * tile };
+  }
+  return nodeForSlot(layout, slot, tile);
+}
+
 /* ------------------------------------------------------------------ *
  *  Pure export: dealer coverage (no sim state, safe to import anywhere)
  * ------------------------------------------------------------------ */
@@ -185,8 +273,15 @@ export class StaffSim {
 
     this.layout = null;
     this._restPoint = { x: 0, y: 0 };
+    /** Where off-duty dealers stand. Deliberately NOT the entrance tile: guests
+     * spawn there, so a dealer parked on it disappears into the arrival stream. */
+    this._breakPoint = { x: 0, y: 0 };
     this._waypoints = [{ x: 0, y: 0 }];
     this._tables = [];
+
+    /** Live guest headcount pushed in by the integrator (see setGuestCount).
+     * null = nobody wired it up, fall back to the installed-capacity estimate. */
+    this._guestCount = null;
 
     /** @type {Array<object>} live worker list, see get workers() */
     this._workers = [];
@@ -212,6 +307,7 @@ export class StaffSim {
       { x: tile * 1.5, y: tile * 1.5 };
 
     this._restPoint = { x: entrance.x, y: entrance.y };
+    this._breakPoint = this._computeBreakPoint(tile);
     this._waypoints = this._buildWaypoints(tile);
     this._tables = this._collectDealerTables(tile);
 
@@ -246,9 +342,35 @@ export class StaffSim {
     }
   }
 
-  /** [{id, role, x, y, state, targetId}, ...] — dealers/guards/cleaners only. */
+  /**
+   * Live guest headcount, pushed in by the integrator (GuestSim is not visible
+   * from this module). Cleanliness decay is per *guest*, so without this the
+   * floor decayed at a rate set by installed seat capacity and an empty casino
+   * got dirty exactly as fast as a packed one.
+   * @param {number|null} n concurrent guests, or null to fall back to capacity
+   */
+  setGuestCount(n) {
+    this._guestCount = Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+  }
+
+  /**
+   * [{id, role, x, y, state, targetId, moving, speed, dirX, dirY, facing,
+   *   walkPhase}, ...] — dealers/guards/cleaners only.
+   * `state` is truthful about motion: 'walking' whenever the worker is actually
+   * crossing the floor (including a dealer heading off for a break), so a
+   * renderer can gate its walk cycle on it. Standing states are 'working'
+   * (dealer at its table), 'break', 'patrol'/'idle' and 'responding'.
+   */
   get workers() {
     return this._workers;
+  }
+
+  /** Ids of the tables a dealer is currently assigned to — the spatial truth,
+   * as opposed to the pure count ratio in dealerCoverage(). */
+  get mannedTableIds() {
+    const ids = new Set();
+    for (const t of this._tables) if (t.dealerId) ids.add(t.tableId);
+    return ids;
   }
 
   /** 0..1 fraction of dealer-requiring tables that currently have a dealer at them. */
@@ -273,6 +395,19 @@ export class StaffSim {
   }
 
   /* -------------------------- internals -------------------------- */
+
+  /** A staff corner a couple of tiles inside the entrance, clear of the guest
+   * spawn stream. Walks north off the door until it finds a walkable cell. */
+  _computeBreakPoint(tile) {
+    const gx = Math.floor(this._restPoint.x / tile);
+    const gy = Math.floor(this._restPoint.y / tile);
+    for (let step = 2; step <= 4; step++) {
+      if (isWalkable(this.layout, gx, gy - step)) {
+        return { x: (gx + 0.5) * tile, y: (gy - step + 0.5) * tile };
+      }
+    }
+    return { x: this._restPoint.x, y: this._restPoint.y };
+  }
 
   _buildWaypoints(tile) {
     const pts = [];
@@ -299,7 +434,7 @@ export class StaffSim {
       if (!slot || slot.kind !== 'venue') continue;
       const def = VENUES[slot.key];
       if (!def || !def.needsDealer) continue;
-      const pos = nodeForSlot(this.layout, slot, tile);
+      const pos = dealerPostForSlot(this.layout, slot, tile);
       tables.push({
         tableId: slot.key + '#' + slot.index,
         key: slot.key,
@@ -346,9 +481,21 @@ export class StaffSim {
       ty: rest.y,
       state: role === 'dealer' ? 'walking' : 'patrol',
       targetId: null,
+      // Motion published for the renderer's walk cycle; see _applyMotion().
+      moving: false,
+      speed: 0,
+      dirX: 0,
+      dirY: 1,
+      facing: 's',
+      walkPhase: 0,
       _wpIndex: null,
       _wait: 0,
-      _respondFor: 0
+      _respondFor: 0,
+      // Dealer shift rotation.
+      _shiftFor: 0,
+      _shiftLen: rollShift(),
+      _break: 0,
+      _lastTableId: null
     };
   }
 
@@ -366,25 +513,70 @@ export class StaffSim {
     if (this._tables.length === 0) return;
 
     const dealers = this._workers.filter((w) => w.role === 'dealer');
-    const manned = new Set();
-    for (const w of dealers) if (w.targetId) manned.add(w.targetId);
-    for (const t of this._tables) {
-      if (!manned.has(t.tableId)) t.dealerId = null;
+
+    // Rebuild ownership from the WORKERS, never from the tables. setLayout()
+    // recreates every table object from scratch with `dealerId: null` (which
+    // happens on every purchase that changes a count), so trusting the table
+    // side made already-claimed posts look free and let the next hire
+    // double-book them while other tables stayed empty forever.
+    for (const t of this._tables) t.dealerId = null;
+    for (const w of dealers) {
+      if (!w.targetId) continue;
+      const t = this._tables.find((x) => x.tableId === w.targetId);
+      if (!t) {
+        w.targetId = null; // the venue count dropped; back into the pool
+        continue;
+      }
+      if (t.dealerId) {
+        w.targetId = null; // duplicate claimant; back into the pool
+        continue;
+      }
+      t.dealerId = w.id;
+      // A rebuild also MOVES the table, so refresh the cached target point.
+      w.tx = t.x;
+      w.ty = t.y;
     }
 
     const freeTables = this._tables.filter((t) => !t.dealerId);
-    const idleDealers = dealers.filter((w) => !w.targetId);
+    if (freeTables.length === 0) return;
 
-    const n = Math.min(freeTables.length, idleDealers.length);
-    for (let i = 0; i < n; i++) {
-      const w = idleDealers[i];
-      const t = freeTables[i];
-      w.targetId = t.tableId;
-      w.tx = t.x;
-      w.ty = t.y;
-      w.state = 'walking';
-      t.dealerId = w.id;
+    for (const w of dealers) {
+      if (freeTables.length === 0) break;
+      if (w.targetId || w._break > 0) continue; // posted, or off duty
+      const t = this._pickTable(w, freeTables);
+      freeTables.splice(freeTables.indexOf(t), 1);
+      this._claimTable(w, t);
     }
+  }
+
+  /** Nearest of `candidates`, with a penalty on the post this dealer just left
+   * so a rotation is never immediately undone. */
+  _pickTable(w, candidates) {
+    let best = candidates[0];
+    let bestScore = Infinity;
+    for (const t of candidates) {
+      const dx = t.x - w.x;
+      const dy = t.y - w.y;
+      let score = Math.sqrt(dx * dx + dy * dy);
+      if (t.tableId === w._lastTableId) score += REVISIT_PENALTY;
+      if (score < bestScore) {
+        bestScore = score;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  /** Put `w` on the books for `table` and start a fresh shift. */
+  _claimTable(w, table, lastTableId) {
+    w.targetId = table.tableId;
+    w.tx = table.x;
+    w.ty = table.y;
+    w.state = 'walking';
+    w._shiftFor = 0;
+    w._shiftLen = rollShift();
+    if (lastTableId !== undefined) w._lastTableId = lastTableId;
+    table.dealerId = w.id;
   }
 
   _updateWorkers(dt) {
@@ -395,24 +587,145 @@ export class StaffSim {
     const waypoints = this._waypoints;
 
     for (const w of this._workers) {
+      const px = w.x;
+      const py = w.y;
       if (w.role === 'dealer') this._updateDealer(w, dt, dealerSpeed);
       else if (w.role === 'guard') this._updateGuard(w, dt, guardSpeed, waypoints);
       else if (w.role === 'cleaner') this._updatePatroller(w, dt, cleanerSpeed, waypoints);
+      this._applyMotion(w, px, py, dt);
     }
   }
 
+  /**
+   * Publish the motion the renderer's walk cycle needs. Derived from the
+   * position DELTA rather than from `state`, so it can never disagree with what
+   * the sprite actually did this frame:
+   *   moving    — did the worker cover ground
+   *   speed     — world px/s actually travelled
+   *   dirX/dirY — unit heading, retained while standing still so a posted
+   *               dealer keeps facing the way it arrived
+   *   facing    — 'n'|'e'|'s'|'w' cardinal of the heading in WORLD space
+   *   walkPhase — 0..1 stride phase, advanced by DISTANCE (one stride per
+   *               STRIDE_PX) so legs stay locked to the feet, not to wall time
+   */
+  _applyMotion(w, px, py, dt) {
+    const dx = w.x - px;
+    const dy = w.y - py;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (!(dist > 1e-4)) {
+      w.moving = false;
+      w.speed = 0;
+      return;
+    }
+    w.moving = true;
+    w.speed = dt > 0 ? dist / dt : 0;
+    w.dirX = dx / dist;
+    w.dirY = dy / dist;
+    w.facing = cardinalOf(dx, dy);
+    w.walkPhase = (w.walkPhase + dist / STRIDE_PX) % 1;
+  }
+
+  /**
+   * Dealers hold a post for a shift, then rotate. Three ways out of a shift,
+   * all of which HAND THE TABLE OVER rather than abandon it (an unmanned table
+   * earns nothing): take an unmanned table (frees one, fills one — coverage is
+   * unchanged), trade places with a colleague, or pass the post to a dealer who
+   * is currently off-post and go take a break.
+   */
   _updateDealer(w, dt, speed) {
+    // Off duty: walk to the staff corner, stand there, then rejoin the pool.
+    if (w._break > 0) {
+      const bp = this._breakPoint;
+      const arrived = moveToward(w, bp.x, bp.y, speed, dt);
+      if (arrived) w._break = Math.max(0, w._break - dt);
+      w.state = arrived ? 'break' : 'walking';
+      return;
+    }
+
     if (w.targetId) {
       const table = this._tables.find((t) => t.tableId === w.targetId);
       if (table) {
         const arrived = moveToward(w, table.x, table.y, speed, dt);
-        w.state = arrived ? 'working' : 'walking';
+        if (!arrived) {
+          w.state = 'walking';
+          return;
+        }
+        w.state = 'working';
+        w._shiftFor += dt;
+        if (w._shiftFor >= w._shiftLen) this._rotateDealer(w, table);
         return;
       }
-      w.targetId = null; // table vanished (venue count dropped); fall through to idle
+      w.targetId = null; // table vanished (venue count dropped)
     }
-    moveToward(w, this._restPoint.x, this._restPoint.y, speed, dt);
-    w.state = 'idle';
+
+    // No post to hold (no dealer tables yet, or more dealers than tables).
+    // Stroll the floor rather than standing on the entrance tile guests spawn
+    // on — unassigned staff should still look employed.
+    this._updatePatroller(w, dt, speed, this._waypoints);
+    if (w.state === 'patrol') w.state = 'walking';
+  }
+
+  /** End of shift: move `w` off `current` in whichever way keeps coverage. */
+  _rotateDealer(w, current) {
+    const others = this._tables.filter((t) => t !== current);
+    if (others.length === 0) {
+      // Sole table: there is nowhere to hand it to, and walking away would
+      // simply stop it earning. Serve another shift.
+      w._shiftFor = 0;
+      w._shiftLen = rollShift();
+      return;
+    }
+
+    // 1. An unmanned table is worth more than the one we are standing at, and
+    //    swapping one empty post for another leaves total coverage unchanged.
+    const free = others.filter((t) => !t.dealerId);
+    if (free.length > 0) {
+      current.dealerId = null;
+      this._claimTable(w, this._pickTable(w, free), current.tableId);
+      return;
+    }
+
+    // 2. Every post is taken: trade places with whoever has been on station
+    //    longest. Both tables keep an owner throughout the crossover.
+    //    Skipping the post we came from stops two dealers pairing off and
+    //    ping-ponging between the same two tables for the rest of the session.
+    const dealers = this._workers.filter((d) => d.role === 'dealer');
+    let partnerTable = null;
+    let partner = null;
+    for (let pass = 0; pass < 2 && !partner; pass++) {
+      for (const t of others) {
+        if (pass === 0 && t.tableId === w._lastTableId) continue;
+        const p = dealers.find((d) => d.id === t.dealerId);
+        if (!p || p === w) continue;
+        if ((p._shiftFor || 0) < MIN_SWAP_SHIFT) continue; // only just sat down
+        if (!partner || (p._shiftFor || 0) > (partner._shiftFor || 0)) {
+          partner = p;
+          partnerTable = t;
+        }
+      }
+    }
+    if (partner) {
+      this._claimTable(partner, current, partnerTable.tableId);
+      this._claimTable(w, partnerTable, current.tableId);
+      return;
+    }
+
+    // 3. Nobody to trade with, but a colleague is off-post: hand the table over
+    //    (_reassignDealers slots them in next tick) and take a real break.
+    const spare = dealers.find((d) => d !== w && !d.targetId && !(d._break > 0));
+    if (spare) {
+      current.dealerId = null;
+      w.targetId = null;
+      w._lastTableId = current.tableId;
+      w._break = rollBreak();
+      w.state = 'walking';
+      return;
+    }
+
+    // Every colleague has only just taken their own post. Hold this one and
+    // re-check soon rather than sitting out another whole shift.
+    w._shiftFor = 0;
+    w._shiftLen = SHIFT_RETRY_SECONDS;
   }
 
   /**
@@ -469,10 +782,12 @@ export class StaffSim {
     this.cleanliness = clamp01(this.cleanliness + (restore - dirt) * dt);
   }
 
-  /** No live guest reference is available to this sim (GuestSim isn't passed
-   * in); approximate ambient traffic from the total seated capacity of every
-   * placed venue/service as a stand-in for concurrent guest load. */
+  /** Live guest traffic. GuestSim isn't visible from here, so the integrator
+   * pushes the headcount in every frame (see setGuestCount); the installed
+   * capacity below is only the fallback for a caller that never wires it up. */
   _estimateTraffic() {
+    if (this._guestCount !== null) return this._guestCount;
+
     const venues = this.worldState.venues || {};
     let capacity = 0;
     for (const key of VENUE_KEYS) {

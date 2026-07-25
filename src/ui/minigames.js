@@ -27,6 +27,8 @@ import { t, onLocaleChanged } from '../core/i18n.js';
 
 let root = null;
 let modalContainer = null;
+/** Guards mount() against double-subscribing the bus (see mount()). */
+let mounted = false;
 
 /* ------------------------------------------------------------------ *
  *  Cooldown helpers (state.cooldowns.roulette / state.cooldowns.blackjack)
@@ -227,6 +229,20 @@ function animateSpin(ctx, size, targetIndex, duration, onDone) {
 }
 
 function closeRoulette() {
+  /*
+   * The stake is debited and the round settled the moment Spin is tapped, so a
+   * modal torn down mid-animation must never cost the player a win. The payout
+   * itself is already in the wallet (see settleRouletteBet) — all that can be
+   * missing is the player ever *seeing* it, because renderRouletteOutcome only
+   * runs when the wheel finishes. Announce it on the way out.
+   */
+  if (rl && rl.lastOutcome && rl.lastOutcome.win && rl.paid && !rl.outcomeShown) {
+    try {
+      toast(t('mini.roulette.autoCollected', { amount: fmtMoney(rl.lastOutcome.payout) }), 'good');
+    } catch (err) {
+      // a failed toast must never block the teardown below
+    }
+  }
   if (rlRaf) {
     cancelAnimationFrame(rlRaf);
     rlRaf = null;
@@ -275,7 +291,10 @@ function renderRouletteGame() {
   }
   rlBody.innerHTML = '';
 
-  rl = { betKey: null, betParam: null, amount: computeRouletteBet(), spinning: false, claimed: false, lastOutcome: null, lastResultBox: null, lastWorld: null };
+  // `paid` — the win has already been credited to lastWorld (settlement, not
+  // the outcome UI, is what pays). `claimed` — the player has since made the
+  // cash-or-boost choice, so neither button may fire again.
+  rl = { betKey: null, betParam: null, amount: computeRouletteBet(), spinning: false, claimed: false, paid: false, outcomeShown: false, lastOutcome: null, lastResultBox: null, lastWorld: null };
 
   const wheelWrap = el('div', null);
   wheelWrap.style.display = 'flex';
@@ -321,7 +340,11 @@ function renderRouletteGame() {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'shop-item';
-    btn.textContent = t('mini.roulette.bet.' + def.key) + ' (x' + def.payout + ')';
+    // The payout tag was a hardcoded ' (x2)': a Latin 'x' where every other
+    // multiplier in the app is '×', and a parenthesised suffix whose placement
+    // next to Hebrew text is a locale decision. Both now live in the tables.
+    btn.textContent =
+      t('mini.roulette.bet.' + def.key) + ' ' + t('mini.roulette.payoutTag', { mult: def.payout });
     btn.addEventListener('click', () => {
       rl.betKey = def.key;
       rl.betParam = null;
@@ -398,17 +421,20 @@ function renderRouletteGame() {
     const targetIdx = Math.floor(Math.random() * WHEEL_ORDER.length);
     const winNumber = WHEEL_ORDER[targetIdx];
 
-    // Settle the bet (win/lose, diamonds, cooldown) synchronously, right
-    // now — not in the animation's completion callback. That way, if the
-    // modal is torn down mid-spin, the round is already fully resolved and
-    // the cooldown already started; only the (purely cosmetic) result UI
-    // update is deferred, and it's guarded below by a round token so a
-    // stale callback can't write into detached/reused DOM.
+    // Settle the bet (win/lose, PAYOUT, diamonds, cooldown) synchronously,
+    // right now — not in the animation's completion callback, and not in the
+    // outcome UI's buttons. The stake and the cooldown are spent the instant
+    // Spin is tapped, so the winnings must be equally independent of how long
+    // the modal happens to live: closing the ×, tapping the backdrop, or the
+    // tab being killed one second into the 3.6 s wheel must all leave the
+    // player paid. Only the (purely cosmetic) result UI is deferred, guarded
+    // by a round token so a stale callback can't write into detached DOM.
     const round = rl;
-    const outcome = settleRouletteBet(winNumber, def, round.betParam, round.amount);
+    const outcome = settleRouletteBet(winNumber, def, round.betParam, round.amount, w);
     round.lastOutcome = outcome;
     round.lastResultBox = resultBox;
     round.lastWorld = w;
+    round.paid = outcome.win;
 
     animateSpin(ctx, 220, targetIdx, 3600, () => {
       if (rl !== round) return; // modal closed or a new round started meanwhile
@@ -420,7 +446,14 @@ function renderRouletteGame() {
   refreshSpinEnabled();
 }
 
-function settleRouletteBet(winNumber, def, betParam, amount) {
+/**
+ * Resolve a round completely: win/lose, straight-up diamonds, the cooldown,
+ * AND the cash payout. Paying here rather than from a button in the outcome UI
+ * is the whole point — the modal's lifetime no longer decides whether an
+ * already-earned win is honoured.
+ * @param {any} w the world that placed (and was debited for) the bet.
+ */
+function settleRouletteBet(winNumber, def, betParam, amount, w) {
   const color = numberColor(winNumber);
   let win = false;
   if (def.key === 'red' || def.key === 'black') win = color === def.key;
@@ -437,11 +470,14 @@ function settleRouletteBet(winNumber, def, betParam, amount) {
   }
 
   const payout = win ? Math.floor(amount * def.payout) : 0;
+  if (win && payout > 0 && w) addMoney(w, payout);
   return { winNumber, color, win, payout, payoutMult: def.payout };
 }
 
 function renderRouletteOutcome(outcome, resultBox, w) {
+  if (!resultBox) return;
   resultBox.innerHTML = '';
+  if (rl) rl.outcomeShown = true;
   const headline = el('div', 'card-title', t('mini.roulette.result', { number: outcome.winNumber, color: colorLabel(outcome.color) }));
   headline.style.fontSize = '16px';
   resultBox.appendChild(headline);
@@ -456,6 +492,16 @@ function renderRouletteOutcome(outcome, resultBox, w) {
     line.style.margin = '6px 0';
     resultBox.appendChild(line);
 
+    // The cash is already in the wallet (settleRouletteBet paid it the moment
+    // the round resolved). Say so, so the choice below reads as "keep this or
+    // trade it in" rather than an unclaimed prize the player might walk away
+    // from — which is exactly how the payout used to get lost.
+    const bankedLine = el('div', null, t('mini.roulette.banked', { amount: fmtMoney(payout) }));
+    bankedLine.style.color = 'var(--text-muted)';
+    bankedLine.style.fontSize = '12px';
+    bankedLine.style.margin = '2px 0 6px';
+    resultBox.appendChild(bankedLine);
+
     const choices = el('div', null);
     choices.style.display = 'flex';
     choices.style.gap = '8px';
@@ -464,11 +510,11 @@ function renderRouletteOutcome(outcome, resultBox, w) {
     const cashBtn = document.createElement('button');
     cashBtn.type = 'button';
     cashBtn.className = 'success';
-    cashBtn.textContent = t('mini.roulette.takeCash');
+    cashBtn.textContent = t('mini.roulette.keepCash');
     cashBtn.disabled = alreadyClaimed;
     cashBtn.addEventListener('click', () => {
-      addMoney(w, payout);
-      toast(t('mini.roulette.gotCash', { amount: fmtMoney(payout) }), 'good');
+      // Pure confirmation: the money was credited at settlement, so this only
+      // closes the choice. It must never call addMoney() again.
       if (rl) rl.claimed = true;
       cashBtn.disabled = true;
       boostBtn.disabled = true;
@@ -488,10 +534,13 @@ function renderRouletteOutcome(outcome, resultBox, w) {
     const boostBtn = document.createElement('button');
     boostBtn.type = 'button';
     boostBtn.className = 'secondary';
-    boostBtn.textContent = t('mini.roulette.takeBoost', { mult: cfg.boostMult });
+    boostBtn.textContent = t('mini.roulette.swapBoost', { mult: cfg.boostMult });
     boostBtn.disabled = alreadyClaimed;
     boostBtn.addEventListener('click', () => {
       const seconds = boostSeconds;
+      // The payout is already banked, so trading it for the boost has to hand
+      // it back first — otherwise the swap would pay both rewards at once.
+      if (w && payout > 0) addMoney(w, -payout);
       state.boosts.income = { mult: cfg.boostMult, until: Date.now() + seconds * 1000 };
       bus.emit('boost:started', { kind: 'income', mult: cfg.boostMult, seconds });
       save();
@@ -617,6 +666,25 @@ function drawCard() {
 }
 
 function closeBlackjack() {
+  /*
+   * Same shape as the roulette bug: finishBlackjackHand() burns the 15-minute
+   * cooldown the instant the hand resolves, but the reward is only handed over
+   * by one of the three choice buttons. Closing the modal on a won hand paid
+   * nothing and still locked the game out for 15 minutes. Award the default
+   * (diamonds — the option the "success" button offers) on the way out.
+   */
+  if (bj && !bj.claimed && (bj.outcome === 'win' || bj.outcome === 'blackjack')) {
+    try {
+      const cfg = CONFIG.minigames.blackjack;
+      const amount = bj.outcome === 'blackjack' ? cfg.diamondsBlackjack : cfg.diamondsWin;
+      bj.claimed = true;
+      addDiamonds(amount);
+      save();
+      toast(t('mini.blackjack.autoCollected', { amount }), 'good');
+    } catch (err) {
+      // never let the payout wiring block the teardown below
+    }
+  }
   if (bjCooldownTimer) {
     clearInterval(bjCooldownTimer);
     bjCooldownTimer = null;
@@ -957,6 +1025,10 @@ function retranslateBlackjack() {
 export function mount(mountRoot) {
   root = mountRoot || null;
   ensureModalContainer();
+  // A second mount() would double-subscribe both open hooks (two stacked
+  // modals per tap) and add a second onLocaleChanged listener nothing removes.
+  if (mounted) return;
+  mounted = true;
 
   // Optional integration hooks: other modules may emit these instead of
   // importing openRoulette()/openBlackjack() directly.

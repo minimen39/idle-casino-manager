@@ -34,8 +34,26 @@
  *  Cache identity
  * ------------------------------------------------------------------ */
 
-/** Bump VERSION on every deploy to invalidate the whole precache. */
-var VERSION = 'v4';
+/**
+ * Cache generation. Bumping it throws the whole precache away on the next
+ * install, so it is only bumped when the CACHING BEHAVIOUR changes — it is no
+ * longer the mechanism that gets a deploy to installed clients.
+ *
+ * It used to be: `handleAsset` is cache-first, so every ES module and
+ * styles.css was served from the v4 cache until some later deploy happened to
+ * change sw.js's own bytes. A fix that touched only src/** was therefore
+ * invisible to an installed player for the entire session (and commit 0e769fe
+ * — "Bump service worker cache version so the zoom fix reaches installed
+ * clients" — was that failure mode being papered over by hand).
+ *
+ * Now the background revalidate compares the fresh bytes against the cached
+ * ones and, when a precached asset really changed, tells every open client
+ * (see notifyClients / ASSET_UPDATED). pwa.js turns that into the same update
+ * bar a waiting worker produces, so a deploy is announced within seconds of a
+ * launch and one tap on "Refresh" runs the new code. Bumping this constant is
+ * now an optimisation, not a release requirement.
+ */
+var VERSION = 'v6';
 var CACHE_PREFIX = 'idle-casino-';
 var CACHE_NAME = CACHE_PREFIX + VERSION;
 
@@ -61,6 +79,13 @@ var SCOPE_PATH = new URL('./', self.location.href).pathname;
  * All 19 ES modules are enumerated explicitly; the SW cannot walk the import
  * graph, and a module that is missing from the cache would make the game fail
  * to boot offline with a module-resolution error.
+ *
+ * Re-verified against the filesystem: `find . -name '*.js'` outside tools/
+ * returns exactly these 19 modules plus sw.js itself (which must NOT be
+ * precached — the browser fetches it through its own update path), and
+ * index.html references only ./styles.css, ./src/main.js, ./manifest.webmanifest,
+ * ./icons/favicon-32.png and ./icons/apple-touch-icon-180.png, all listed here
+ * or in OPTIONAL_ASSETS below. No drift.
  */
 var CORE_ASSETS = [
   './',
@@ -111,7 +136,14 @@ var OPTIONAL_ASSETS = [
   './icons/icon-512.png',
   './icons/icon-512-maskable.png',
   './icons/favicon-32.png',
-  './icons/apple-touch-icon-180.png'
+  './icons/apple-touch-icon-180.png',
+  // The first-run guide + help modal (contract C7). It now ships, and is
+  // precached like everything else in this list — but it stays OPTIONAL rather
+  // than CORE deliberately: main.js imports it lazily behind a guard, so a
+  // build without it degrades to "no guide", whereas listing it under
+  // CORE_ASSETS would make its absence reject install() and leave the app with
+  // NO service worker at all. Resilience is worth more than the loud failure.
+  './src/ui/tutorial.js'
 ];
 
 /* ------------------------------------------------------------------ *
@@ -351,6 +383,12 @@ var NAVIGATE_TIMEOUT_MS = 2500;
  * picked; guessing wrong on the one screen that explains what went wrong is
  * worse than showing both lines. Each line carries its own lang/dir so the
  * Hebrew renders RTL and the English LTR inside the same document.
+ *
+ * The two lines below are verbatim copies of the locale keys
+ * `pwa.offlineTitle` / `pwa.offlineLine1` / `pwa.offlineLine2` in
+ * src/core/locales/{he,en}.js. They drifted once already ("unavailable" vs the
+ * key's "not available", a plural Hebrew imperative against the singular
+ * register the rest of the game uses). Edit one, edit the other.
  */
 function offlineFallbackPage() {
   return new Response(
@@ -360,8 +398,8 @@ function offlineFallbackPage() {
       '<body style="background:#150c26;color:#f4ecff;font-family:system-ui,sans-serif;' +
       'display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;' +
       'height:100vh;margin:0;text-align:center;padding:16px;box-sizing:border-box">' +
-      '<p lang="he" dir="rtl" style="margin:0">המשחק אינו זמין במצב לא מקוון.<br>התחברו לרשת ונסו שוב.</p>' +
-      '<p lang="en" dir="ltr" style="margin:0">The game is unavailable offline.<br>Reconnect and try again.</p>' +
+      '<p lang="he" dir="rtl" style="margin:0">המשחק אינו זמין במצב לא מקוון.<br>התחבר לרשת ונסה שוב.</p>' +
+      '<p lang="en" dir="ltr" style="margin:0">The game is not available offline.<br>Reconnect to the network and try again.</p>' +
       '</body></html>',
     {
       status: 200,
@@ -439,26 +477,128 @@ function handleNavigate(request) {
   });
 }
 
-/** Kick off a background refresh of an asset. Fire-and-forget, never throws. */
-function revalidate(cache, request) {
+/* ------------------------------------------------------------------ *
+ *  Change detection — "a deploy must not be invisible for a session"
+ * ------------------------------------------------------------------ */
+
+/**
+ * A cheap identity for a response, built from whatever validators the server
+ * sends. GitHub Pages sends ETag + Last-Modified; python's http.server (the
+ * local harness) sends Last-Modified + Content-Length. Returns '' when the
+ * server sends none of them, which is treated as "cannot tell" — never as
+ * "changed", so a validator-less host degrades to today's silent behaviour
+ * instead of nagging on every request.
+ */
+function fingerprint(response) {
+  if (!response || !response.headers || typeof response.headers.get !== 'function') return '';
+  var etag = response.headers.get('etag') || '';
+  var modified = response.headers.get('last-modified') || '';
+  var length = response.headers.get('content-length') || '';
+  var out = etag + '|' + modified + '|' + length;
+  return out === '||' ? '' : out;
+}
+
+/**
+ * url -> the fingerprint we last announced for it. Keyed by fingerprint rather
+ * than by url alone so that a SECOND deploy touching the same file, while this
+ * worker instance is still alive, is announced too — a worker outlives the
+ * page reload that follows "Refresh", so a plain "announced once" flag would
+ * go quiet for the rest of the day.
+ */
+var announced = Object.create(null);
+
+/** Tell every open page that a precached asset on disk no longer matches the
+ *  bytes it is currently running. pwa.js turns this into the update bar. */
+function notifyClients(url, version) {
+  if (announced[url] === version) return;
+  announced[url] = version;
+  if (!self.clients || typeof self.clients.matchAll !== 'function') return;
+  self.clients
+    .matchAll({ type: 'window', includeUncontrolled: true })
+    .then(function (list) {
+      for (var i = 0; i < list.length; i++) {
+        try {
+          list[i].postMessage({ type: 'ASSET_UPDATED', url: url, version: VERSION });
+        } catch (err) {
+          /* that client went away */
+        }
+      }
+    })
+    .catch(function () {
+      /* matchAll is best-effort */
+    });
+}
+
+/**
+ * Kick off a background refresh of an asset. Fire-and-forget, never throws.
+ * When the fresh copy differs from the one we just served, the new bytes go
+ * into the cache (so the very next load runs them) AND the pages that are
+ * running the old bytes are told, instead of finding out a session later.
+ * @param {Response|null} cached the copy that was served from the cache.
+ */
+function revalidate(cache, request, cached) {
+  var before = fingerprint(cached);
   fetch(request)
     .then(function (response) {
-      if (isCacheable(response)) safePut(cache, request, response.clone());
+      if (!isCacheable(response)) return;
+      var after = fingerprint(response);
+      safePut(cache, request, response.clone());
+      // Both fingerprints must be readable before a mismatch means anything.
+      if (before && after && before !== after) notifyClients(request.url, after);
     })
     .catch(function () {
       /* offline: the cached copy we already served stays valid */
     });
 }
 
+/** Guard so an explicit CHECK_UPDATES sweep can never pile up on itself. */
+var sweepInFlight = false;
+var lastSweepAt = 0;
+var SWEEP_MIN_INTERVAL_MS = 60000;
+
+/**
+ * Re-check every core asset on demand. A running page never re-requests its
+ * own modules, so without this a deploy landing mid-session is only noticed on
+ * the next launch; pwa.js posts CHECK_UPDATES when the tab is brought back to
+ * the foreground. Throttled, and each changed url still announces at most once.
+ */
+function sweepCoreAssets() {
+  var now = Date.now();
+  if (sweepInFlight || now - lastSweepAt < SWEEP_MIN_INTERVAL_MS) return Promise.resolve();
+  sweepInFlight = true;
+  lastSweepAt = now;
+  return openCache()
+    .then(function (cache) {
+      if (!cache) return null;
+      var urls = absolutize(CORE_ASSETS);
+      return Promise.all(
+        urls.map(function (url) {
+          var request = new Request(url, { credentials: 'same-origin' });
+          return safeMatch(cache, request).then(function (cached) {
+            if (!cached) return false;
+            return revalidate(cache, request, cached);
+          });
+        })
+      );
+    })
+    .catch(function () {
+      /* a failed sweep is a no-op, never an error the page sees */
+    })
+    .then(function () {
+      sweepInFlight = false;
+    });
+}
+
 /**
  * Static same-origin assets: cache-first (instant, works offline) with a
- * background revalidate so the next load picks up a redeploy.
+ * background revalidate so the next load picks up a redeploy — and so the
+ * CURRENT load is told that it is already out of date.
  */
 function handleAsset(request) {
   return openCache().then(function (cache) {
     return safeMatch(cache, request).then(function (cached) {
       if (cached) {
-        revalidate(cache, request);
+        revalidate(cache, request, cached);
         return cached;
       }
       return fetch(request)
@@ -524,6 +664,15 @@ self.addEventListener('message', function (event) {
 
   if (type === 'SKIP_WAITING') {
     self.skipWaiting();
+    return;
+  }
+
+  // Asked by pwa.js when the tab comes back to the foreground: re-check the
+  // precached shell against the server so a deploy that landed mid-session is
+  // announced now rather than at the next cold launch.
+  if (type === 'CHECK_UPDATES') {
+    if (event && typeof event.waitUntil === 'function') event.waitUntil(sweepCoreAssets());
+    else sweepCoreAssets();
     return;
   }
 

@@ -156,7 +156,11 @@ export function buy(w, kind, key) {
   }
 
   recomputeTier(w);
-  bus.emit('purchase', { worldId: w.id, key, kind });
+  // Coalesced on purpose: panels.js's "Buy x10" calls buy() ten times in one
+  // synchronous loop and main.js rebuilds the entire floor plan (+ every guest
+  // flow field) per 'purchase'. Ten rebuilds in one tap janks the phone; the
+  // listeners all just re-read world state, so one emit per burst is enough.
+  bus.emitCoalesced('purchase', { worldId: w.id, key, kind });
   bus.emit('money:changed', { worldId: w.id, money: w.money });
   save();
   return true;
@@ -192,6 +196,38 @@ export function addDiamonds(n) {
 /* ------------------------------------------------------------------ *
  *  Income
  * ------------------------------------------------------------------ */
+
+/**
+ * THE station income rule, shared by economy.incomeRate() (which pays the
+ * player) and GuestSim._refreshDerived() (which drives what the floor visibly
+ * produces). It used to be implemented twice with different formulas — this
+ * module scaled the bonus by count*level (20.5x at max build) while guests.js
+ * used level only (3.16x) — so the HUD rate and the simulated rate diverged by
+ * ~6.5x once stations were levelled.
+ *
+ * config.js documents `stationIncomeBonus` as "global soft multiplier per
+ * station LEVEL", so the per-level reading wins: each station line that is
+ * actually built contributes (level - 1) steps. Buying more copies of a
+ * station still helps — through throughput in the sim — but does not
+ * multiply global income a second time.
+ *
+ * @param {object} w world-state block
+ * @returns {number} multiplier, always finite and >= 1
+ */
+export function stationIncomeMultiplier(w) {
+  if (!w || !w.stations) return 1;
+  let levelSum = 0;
+  for (const key of STATION_KEYS) {
+    const entry = w.stations[key];
+    if (!entry) continue;
+    const count = Math.max(0, Math.floor(entry.count) || 0);
+    if (count <= 0) continue;
+    const level = Math.max(1, Math.floor(entry.level) || 1);
+    levelSum += level - 1;
+  }
+  const mult = 1 + CONFIG.economy.stationIncomeBonus * levelSum;
+  return Number.isFinite(mult) && mult >= 1 ? mult : 1;
+}
 
 /**
  * Estimated money/second for a world, folding in venue counts+levels,
@@ -235,15 +271,7 @@ export function incomeRate(w) {
 
   if (venueTotal <= 0) return 0;
 
-  let stationLevelSum = 0;
-  if (w.stations) {
-    for (const key of STATION_KEYS) {
-      const entry = w.stations[key];
-      if (!entry) continue;
-      stationLevelSum += Math.max(0, Math.floor(entry.count) || 0) * Math.max(1, Math.floor(entry.level) || 1);
-    }
-  }
-  const stationMult = 1 + CONFIG.economy.stationIncomeBonus * stationLevelSum;
+  const stationMult = stationIncomeMultiplier(w);
 
   let systemsBonus = 0;
   if (w.systems) {
