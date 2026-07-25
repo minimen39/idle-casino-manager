@@ -35,7 +35,7 @@
  * ------------------------------------------------------------------ */
 
 /** Bump VERSION on every deploy to invalidate the whole precache. */
-var VERSION = 'v1';
+var VERSION = 'v2';
 var CACHE_PREFIX = 'idle-casino-';
 var CACHE_NAME = CACHE_PREFIX + VERSION;
 
