@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1" />
+  <title>Idle Casino Manager - מנהל קזינו סרק</title>
+
+  <!-- PWA manifest -->
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <meta name="theme-color" content="#3d2a5e" />
+
+  <!-- Favicons / touch icons -->
+  <link rel="icon" href="./icons/favicon-32.png" sizes="32x32" />
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon-180.png" />
+
+  <!-- iOS / Android home-screen app behavior -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="מנהל קזינו" />
+
+  <!-- Open Graph / WhatsApp link preview -->
+  <meta property="og:title" content="מנהל קזינו — אימפריית הימורים" />
+  <meta property="og:description" content="נהלו את הקזינו שלכם, בנו אולם משחקים תוסס, גייסו צוות ופתחו את אימפריית ההימורים שלכם במשחק סרק איזומטרי." />
+  <meta property="og:image" content="https://minimen39.github.io/idle-casino-manager/icons/icon-512.png" />
+  <meta property="og:type" content="website" />
+
+  <!-- Twitter card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="מנהל קזינו — אימפריית הימורים" />
+  <meta name="twitter:description" content="נהלו את הקזינו שלכם, בנו אולם משחקים תוסס, גייסו צוות ופתחו את אימפריית ההימורים שלכם במשחק סרק איזומטרי." />
+  <meta name="twitter:image" content="https://minimen39.github.io/idle-casino-manager/icons/icon-512.png" />
+
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <noscript>המשחק דורש JavaScript מופעל כדי לרוץ. אנא הפעילו JavaScript בדפדפן שלכם וטענו מחדש את הדף.</noscript>
+
+  <!-- Main game canvas, filled behind UI -->
+  <canvas id="game"></canvas>
+
+  <!-- UI layer overlays the canvas; all interactive elements live here -->
+  <div id="ui-layer">
+    <!-- HUD: top bar with money, diamonds, tier, etc. -->
+    <div id="hud" class="hud"></div>
+
+    <!-- Build/upgrade/staff management panel -->
+    <div id="panels" class="panels"></div>
+
+    <!-- Modals: world map, minigames, monetization, etc. -->
+    <div id="modals" class="modals"></div>
+
+    <!-- Toast notifications (bottom-center for LTR, bottom-center for RTL) -->
+    <div id="toasts" class="toasts"></div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,1684 @@
+/* ================================================================
+ * Idle Casino Manager — Cartoon Tycoon Theme
+ * (Idle Miner / Idle Bank Tycoon style: bright saturated chrome,
+ * chunky rounded "sticker" UI, dark diorama backdrop)
+ * RTL-aware, responsive, with CSS variables for theming
+ * ================================================================ */
+
+:root {
+  /* Main palette — dark, rich backdrop so the bright isometric diorama
+   * pops, with warm saturated gold/candy accents for the chrome itself. */
+  --bg: #150c26;
+  --bg-alt: #1c1233;
+  --panel: #3d2a5e;
+  --panel-alt: #2e1f47;
+  --panel-lip: #170f28;
+  --accent: #ffb703;
+  --accent-dark: #b3790a;
+  --gold: #ffe066;
+  --text: #fff7ea;
+  --text-muted: #cbb9e3;
+  --good: #2fe6a6;
+  --good-dark: #17a179;
+  --bad: #ff4d6d;
+  --bad-dark: #c72a48;
+  --info: #3ec1ff;
+  --info-dark: #1a86c2;
+  --neon: #7ef2c0;
+  /* Shared-contract alias: modules reference --muted. */
+  --muted: #cbb9e3;
+
+  /* Dark outline used behind gold/money text so it reads over anything,
+   * matching the thick-outline art direction of the diorama itself. */
+  --gold-outline: -1px -1px 0 rgba(0, 0, 0, 0.75), 1px -1px 0 rgba(0, 0, 0, 0.75),
+    -1px 1px 0 rgba(0, 0, 0, 0.75), 1px 1px 0 rgba(0, 0, 0, 0.75), 0 2px 3px rgba(0, 0, 0, 0.5);
+
+  /* Spacing & size */
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+  --spacing-xl: 2rem;
+
+  /* Border radius — big and chunky, "sticker" style */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 22px;
+
+  /* Shadows — hard offset "sticker" drop shadows, not blur-heavy */
+  --shadow-sm: 0 3px 0 rgba(0, 0, 0, 0.4), 0 4px 10px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 0 rgba(0, 0, 0, 0.42), 0 8px 18px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 6px 0 rgba(0, 0, 0, 0.45), 0 14px 30px rgba(0, 0, 0, 0.5);
+
+  /* Safe-area insets — Android punch-hole camera (top) + gesture-nav bar
+   * (bottom), relevant once the manifest sets viewport-fit=cover. Falls
+   * back to 0px on browsers without env() support, so these are always
+   * safe to add into paddings/heights unconditionally. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
+  /* Collapsed height of the mobile build drawer (bottom sheet): grab
+   * handle + tab strip only. Shrunk further for short landscape phones —
+   * see the max-height:480px block near the end of this file. */
+  --drawer-collapsed-h: 64px;
+}
+
+/* ================================================================
+ * Reset & Base
+ * ================================================================ */
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  /* dvh tracks the *current* (dynamic) viewport, so the layout doesn't jump
+   * as Chrome's URL bar collapses/expands on scroll; vh is kept first as a
+   * fallback for engines that don't understand dvh yet. */
+  height: 100vh;
+  height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  /* Touch hygiene: no rubber-band pull-to-refresh (which would otherwise
+   * reload the game mid-drag) and no flash/outline on tap. */
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  display: flex;
+  position: relative;
+}
+
+/* ================================================================
+ * Canvas (Game Render Target)
+ * ================================================================ */
+
+#game {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  /*
+   * Reserve the strip the build drawer (.panels, max-height: 40vh) occupies
+   * along the bottom edge. The renderer letterbox-fits the world into the
+   * canvas's own clientWidth/clientHeight (see Renderer#resize /
+   * Renderer#draw in src/render/renderer.js), so shrinking the canvas here
+   * keeps the whole playable floor — and its pointer hit-testing, which is
+   * derived from the same canvas's getBoundingClientRect() — inside the
+   * area that is actually clickable. Without this, world rows under the
+   * drawer (e.g. cashier/security bands, the south-wall doors) render
+   * beneath opaque, pointer-events:auto drawer content and can never be
+   * clicked. Keep in sync with .panels' max-height, including the 480px
+   * breakpoint below.
+   */
+  height: calc(100% - 40vh);
+  height: calc(100% - 40dvh);
+  display: block;
+  background: linear-gradient(135deg, #241539 0%, #150c26 100%);
+  /* The renderer draws smooth vector/isometric art, not pixel art — never
+   * force nearest-neighbor scaling on this canvas. */
+  /* Touch-only device: the canvas itself never scrolls/zooms via native
+   * gestures (panning/zooming is handled by the renderer's own pointer
+   * logic in main.js) — panels below still need normal touch scrolling,
+   * so this is scoped to the canvas only. */
+  touch-action: none;
+}
+
+/* ================================================================
+ * UI Layer (DOM Overlays)
+ * ================================================================ */
+
+#ui-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+#ui-layer > * {
+  pointer-events: auto;
+}
+
+/* ================================================================
+ * HUD (Top Bar)
+ * ================================================================ */
+
+.hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* The extra safe-top room is added to the box height (not just its
+   * padding) so the punch-hole camera never overlaps the money readout —
+   * padding alone would just shrink the content area inside a fixed 60px. */
+  height: calc(60px + var(--safe-top));
+  padding: calc(var(--spacing-md) + var(--safe-top)) calc(var(--spacing-md) + var(--safe-right))
+    var(--spacing-md) calc(var(--spacing-md) + var(--safe-left));
+  background: linear-gradient(to bottom, rgba(61, 42, 94, 0.97), rgba(28, 18, 51, 0.92));
+  border-bottom: 4px solid var(--accent);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: var(--spacing-lg);
+  font-weight: 500;
+  z-index: 100;
+  backdrop-filter: blur(8px);
+}
+
+.hud-stat {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  white-space: nowrap;
+}
+
+.hud-stat-value {
+  color: var(--accent);
+  font-weight: 800;
+  font-size: 15px;
+}
+
+.hud-stat-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Money reads gold-with-outline everywhere it appears in the HUD, so it
+ * stays legible over the bright diorama regardless of what's behind it. */
+.hud-money .hud-stat-value,
+.hud-diamonds .hud-stat-value {
+  color: var(--gold);
+  text-shadow: var(--gold-outline);
+}
+
+/* ================================================================
+ * Panels (Build/Upgrade UI)
+ * ================================================================ */
+
+.panels {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  /*
+   * Fixed (not max-) height: #game reserves this exact strip (see #game
+   * above), so this must always occupy it — a content-fit max-height would
+   * leave a raw background gap between the canvas and a sparsely-populated
+   * tab (e.g. "systems"). Keep in sync with #game's reserved height.
+   */
+  height: 40vh;
+  height: 40dvh;
+  background: linear-gradient(to top, rgba(28, 18, 51, 0.99), rgba(28, 18, 51, 0.92));
+  border-top: 4px solid var(--accent);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(8px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  z-index: 80;
+}
+
+.panel-tabs {
+  display: flex;
+  flex-direction: row-reverse;
+  border-bottom: 2px solid var(--panel-alt);
+  background: var(--panel);
+}
+
+.tab {
+  flex: 1;
+  padding: var(--spacing-md);
+  text-align: center;
+  cursor: pointer;
+  border: none;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 700;
+  transition: all 0.2s ease;
+  border-bottom: 4px solid transparent;
+}
+
+.tab:hover {
+  background: var(--panel-alt);
+  color: var(--text);
+}
+
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--panel-alt);
+}
+
+.panel-content {
+  padding: var(--spacing-md);
+  display: none;
+}
+
+.panel-content.active {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--spacing-md);
+  max-height: calc(40vh - 50px);
+  overflow-y: auto;
+}
+
+/* ================================================================
+ * Cards (Buy Buttons)
+ * ================================================================ */
+
+.card {
+  padding: var(--spacing-md);
+  background: var(--panel-alt);
+  border: 3px solid var(--accent-dark);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, filter 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  box-shadow: var(--shadow-sm);
+}
+
+.card:hover:not(:disabled) {
+  background: var(--panel);
+  border-color: var(--accent);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+}
+
+.card:disabled {
+  opacity: 0.6;
+  filter: grayscale(0.5) saturate(0.5);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.card-title {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.card-cost {
+  color: var(--gold);
+  text-shadow: var(--gold-outline);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.card-count {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* ================================================================
+ * Buttons
+ * ================================================================ */
+
+button {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 3px solid var(--accent-dark);
+  border-radius: var(--radius-lg);
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+  background: var(--accent);
+  color: #2a1806;
+  white-space: nowrap;
+  /* The "lip": a solid darker offset that reads as a pressable sticker. */
+  box-shadow: 0 4px 0 var(--accent-dark), 0 7px 14px rgba(0, 0, 0, 0.35);
+}
+
+button:hover:not(:disabled) {
+  background: var(--gold);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 var(--accent-dark), 0 10px 18px rgba(0, 0, 0, 0.4);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(3px);
+  box-shadow: none;
+}
+
+button:disabled {
+  opacity: 0.55;
+  filter: grayscale(0.7) saturate(0.35);
+  box-shadow: none;
+  border-color: rgba(255, 255, 255, 0.15);
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: var(--panel-alt);
+  color: var(--text);
+  border: 3px solid var(--accent);
+  box-shadow: 0 4px 0 var(--panel-lip), 0 7px 14px rgba(0, 0, 0, 0.35);
+}
+
+button.secondary:hover:not(:disabled) {
+  background: var(--accent);
+  color: #2a1806;
+  box-shadow: 0 6px 0 var(--panel-lip), 0 10px 18px rgba(0, 0, 0, 0.4);
+}
+
+button.danger {
+  background: var(--bad);
+  color: #2a0a10;
+  border-color: var(--bad-dark);
+  box-shadow: 0 4px 0 var(--bad-dark), 0 7px 14px rgba(0, 0, 0, 0.35);
+}
+
+button.danger:hover:not(:disabled) {
+  background: #ff7089;
+  box-shadow: 0 6px 0 var(--bad-dark), 0 10px 18px rgba(0, 0, 0, 0.4);
+}
+
+button.success {
+  background: var(--good);
+  color: #062f22;
+  border-color: var(--good-dark);
+  box-shadow: 0 4px 0 var(--good-dark), 0 7px 14px rgba(0, 0, 0, 0.35);
+}
+
+button.success:hover:not(:disabled) {
+  background: #5cf0bf;
+  box-shadow: 0 6px 0 var(--good-dark), 0 10px 18px rgba(0, 0, 0, 0.4);
+}
+
+/* ================================================================
+ * Modals
+ * ================================================================ */
+
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(10, 4, 20, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  backdrop-filter: blur(4px);
+}
+
+.modal {
+  position: relative;
+  background: var(--panel);
+  border: 4px solid var(--accent);
+  border-radius: var(--radius-xl);
+  padding: var(--spacing-lg);
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  box-shadow: var(--shadow-lg);
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.modal-title {
+  color: var(--accent);
+  font-size: 20px;
+  font-weight: 800;
+  margin-bottom: var(--spacing-md);
+  text-align: center;
+}
+
+.modal-close {
+  position: absolute;
+  top: var(--spacing-md);
+  right: var(--spacing-md);
+  background: var(--panel-alt);
+  color: var(--text-muted);
+  border: 2px solid var(--accent-dark);
+  border-radius: 50%;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 3px 0 var(--panel-lip);
+  transition: all 0.15s ease;
+}
+
+.modal-close:hover {
+  color: var(--bg);
+  background: var(--accent);
+}
+
+.modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+/* ================================================================
+ * Ad Modal (Rewarded Ad Simulation)
+ * ================================================================ */
+
+.ad-modal {
+  background: linear-gradient(135deg, #241539, #150c26);
+  text-align: center;
+  min-width: 300px;
+  min-height: 250px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+
+.ad-countdown {
+  font-size: 48px;
+  color: var(--gold);
+  text-shadow: var(--gold-outline);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.ad-label {
+  color: var(--text);
+  font-size: 16px;
+}
+
+.ad-skip-button {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.ad-skip-button.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ================================================================
+ * IAP Shop Modal
+ * ================================================================ */
+
+.shop-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.shop-section-title {
+  color: var(--accent);
+  font-size: 16px;
+  font-weight: 700;
+  padding-bottom: var(--spacing-md);
+  border-bottom: 2px solid var(--panel-alt);
+}
+
+.shop-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.shop-item {
+  padding: var(--spacing-md);
+  background: var(--panel-alt);
+  border: 3px solid var(--accent-dark);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+
+.shop-item:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--panel);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+}
+
+.shop-item:disabled {
+  opacity: 0.6;
+  filter: grayscale(0.5) saturate(0.5);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.shop-item-name {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.shop-item-amount {
+  color: var(--gold);
+  text-shadow: var(--gold-outline);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.shop-item-price {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.shop-item.purchased {
+  background: linear-gradient(135deg, rgba(47, 230, 166, 0.25), rgba(47, 230, 166, 0.1));
+  border-color: var(--good);
+  color: var(--good);
+}
+
+.shop-item.purchased::after {
+  content: '✓ רכוש';
+  color: var(--good);
+  font-weight: 700;
+  font-size: 11px;
+}
+
+/* ================================================================
+ * Progress Bar
+ * ================================================================ */
+
+.progress-bar {
+  width: 100%;
+  height: 20px;
+  background: var(--bg-alt);
+  border: 2px solid var(--accent-dark);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--gold));
+  transition: width 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #2a1806;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* ================================================================
+ * Toasts (Notifications)
+ * ================================================================ */
+
+#toasts {
+  position: fixed;
+  bottom: var(--spacing-lg);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  max-width: 400px;
+  width: 90%;
+  z-index: 300;
+  pointer-events: none;
+}
+
+.toast {
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: var(--panel);
+  border: 2px solid var(--panel-alt);
+  border-right: 5px solid var(--accent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  animation: toastSlideUp 0.3s ease;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+@keyframes toastSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast.good {
+  border-right-color: var(--good);
+}
+
+.toast.bad {
+  border-right-color: var(--bad);
+}
+
+.toast.info {
+  border-right-color: var(--info);
+}
+
+/* ================================================================
+ * HUD internals (built by src/ui/hud.js)
+ * ================================================================ */
+
+.hud-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: var(--spacing-lg);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.hud-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.hud-world {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.hud-world-name {
+  color: var(--gold);
+  text-shadow: var(--gold-outline);
+  font-weight: 800;
+  font-size: 15px;
+}
+
+.hud-tier {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 110px;
+}
+
+.hud-tier-badge {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.hud-tier-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel-alt);
+  overflow: hidden;
+}
+
+.hud-tier-fill {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(to left, var(--accent), var(--gold));
+  transition: width 0.3s ease;
+}
+
+.hud-tier-fill.is-max {
+  background: var(--good);
+}
+
+/* Toasts rendered by hud.js live above the build drawer, centered. */
+.hud-toast-area {
+  position: fixed;
+  bottom: 42vh;
+  bottom: 42dvh;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-sm);
+  width: min(420px, 92vw);
+  z-index: 300;
+  pointer-events: none;
+}
+
+.hud-toast {
+  width: 100%;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--panel);
+  border: 2px solid var(--panel-alt);
+  border-right: 5px solid var(--accent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  animation: toastSlideUp 0.25s ease;
+  font-size: 13px;
+  text-align: center;
+  opacity: 1;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.hud-toast-good { border-right-color: var(--good); }
+.hud-toast-bad  { border-right-color: var(--bad); }
+.hud-toast-info { border-right-color: var(--info); }
+
+.hud-toast.is-fading {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* ================================================================
+ * Responsive Design
+ * ================================================================ */
+
+@media (max-width: 768px) {
+  .hud {
+    height: calc(50px + var(--safe-top));
+    padding: calc(var(--spacing-sm) + var(--safe-top)) calc(var(--spacing-sm) + var(--safe-right))
+      var(--spacing-sm) calc(var(--spacing-sm) + var(--safe-left));
+    gap: var(--spacing-md);
+  }
+
+  .hud-stat {
+    font-size: 12px;
+  }
+
+  .hud-stat-value {
+    font-size: 13px;
+  }
+
+  /* Six HUD blocks + five 1.5rem (--spacing-lg) gaps overflow phone
+   * viewports well before any single stat becomes unreadable, and the
+   * scrollbar is deliberately hidden (scrollbar-width:none / ::-webkit-
+   * scrollbar{display:none}) — so give the overflow a visible affordance
+   * and shrink the layout cost of the gaps/tier block instead of relying
+   * on an invisible native scrollbar. */
+  .hud-bar {
+    gap: var(--spacing-sm);
+    -webkit-mask-image: linear-gradient(
+      to left,
+      transparent 0,
+      #000 16px,
+      #000 calc(100% - 16px),
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to left,
+      transparent 0,
+      #000 16px,
+      #000 calc(100% - 16px),
+      transparent 100%
+    );
+  }
+
+  .hud-tier {
+    min-width: 84px;
+  }
+
+  .modal {
+    max-width: 95vw;
+    max-height: 80vh;
+    padding: var(--spacing-md);
+  }
+
+  .panel-content.active {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+
+  .build-panel-rows {
+    grid-template-columns: 1fr;
+  }
+
+  .action-bar {
+    top: 58px;
+    flex-direction: row-reverse;
+    flex-wrap: wrap;
+    left: var(--spacing-sm);
+    right: var(--spacing-sm);
+  }
+
+  .action-btn {
+    font-size: 12px;
+    padding: var(--spacing-xs) var(--spacing-sm);
+  }
+
+  .shop-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  /* Keep the zoom cluster clear of the shrunk top bar and give it a bit
+   * less footprint on phone widths. */
+  .zoom-controls {
+    left: var(--spacing-sm);
+    gap: var(--spacing-xs);
+  }
+
+  .zoom-btn {
+    width: 42px;
+    height: 42px;
+    font-size: 19px;
+  }
+}
+
+@media (max-width: 480px) {
+  :root {
+    font-size: 13px;
+  }
+
+  .hud {
+    height: calc(45px + var(--safe-top));
+    gap: var(--spacing-sm);
+  }
+
+  /* At this width even the trimmed 768px layout can't fit all six HUD
+   * blocks: drop the purely decorative world name so the live numbers
+   * (money/income/diamonds) and tier/guest count stay reachable with
+   * less (or no) scrolling. */
+  .hud-world {
+    display: none;
+  }
+
+  .hud-bar {
+    gap: var(--spacing-xs);
+  }
+
+  .hud-tier {
+    min-width: 64px;
+  }
+
+  .panels {
+    height: 50vh;
+    height: 50dvh;
+  }
+
+  #game {
+    /* Keep in sync with .panels' height above (50vh at this breakpoint). */
+    height: calc(100% - 50vh);
+    height: calc(100% - 50dvh);
+  }
+
+  .modal {
+    max-width: 98vw;
+    padding: var(--spacing-md);
+  }
+
+  .panel-content.active {
+    grid-template-columns: 1fr;
+  }
+
+  .shop-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ad-countdown {
+    font-size: 36px;
+  }
+
+  /* .panels grew to 50vh at this breakpoint — keep the zoom cluster's
+   * bottom offset in sync with it, same rule as #game above. */
+  .zoom-controls {
+    bottom: calc(50vh + var(--spacing-sm));
+    bottom: calc(50dvh + var(--spacing-sm));
+  }
+
+  .zoom-btn {
+    width: 38px;
+    height: 38px;
+    font-size: 17px;
+  }
+
+  .zoom-label {
+    font-size: 10px;
+  }
+}
+
+/* ================================================================
+ * Zoom controls (built by src/ui/hud.js, buildZoomControls())
+ *
+ * DOM contract (see hud.js): a `.zoom-controls` cluster containing, in
+ * order, `.zoom-btn.zoom-btn-in`, `.zoom-label`, `.zoom-btn.zoom-btn-out`,
+ * `.zoom-btn.zoom-btn-fit`. It is appended to #ui-layer as position:fixed,
+ * the same pattern as .hud-toast-area, so it escapes the 60px top bar.
+ * Positioned bottom-left: clear of the right-hand .action-bar and sitting
+ * just above the .panels build drawer (kept in sync with its height via
+ * the calc() below and the 480px breakpoint override above).
+ * ================================================================ */
+
+.zoom-controls {
+  position: fixed;
+  left: var(--spacing-md);
+  bottom: calc(40vh + var(--spacing-md));
+  bottom: calc(40dvh + var(--spacing-md));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-sm);
+  z-index: 90;
+}
+
+.zoom-btn {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border-radius: 50%;
+  border: 3px solid var(--accent-dark);
+  background: var(--accent);
+  color: #2a1806;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 0 var(--accent-dark), 0 7px 14px rgba(0, 0, 0, 0.4);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+
+.zoom-btn:hover:not(:disabled) {
+  background: var(--gold);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 var(--accent-dark), 0 10px 18px rgba(0, 0, 0, 0.45);
+}
+
+.zoom-btn:active:not(:disabled) {
+  transform: translateY(3px);
+  box-shadow: none;
+}
+
+.zoom-btn:disabled {
+  opacity: 0.55;
+  filter: grayscale(0.7) saturate(0.35);
+  box-shadow: none;
+  border-color: rgba(255, 255, 255, 0.15);
+  cursor: not-allowed;
+}
+
+.zoom-btn-fit {
+  font-size: 18px;
+  background: var(--panel-alt);
+  color: var(--text);
+  border-color: var(--accent);
+  box-shadow: 0 4px 0 var(--panel-lip), 0 7px 14px rgba(0, 0, 0, 0.4);
+}
+
+.zoom-btn-fit:hover:not(:disabled) {
+  background: var(--accent);
+  color: #2a1806;
+  box-shadow: 0 6px 0 var(--panel-lip), 0 10px 18px rgba(0, 0, 0, 0.45);
+}
+
+.zoom-label {
+  min-width: 48px;
+  text-align: center;
+  padding: 3px 6px;
+  background: var(--panel-alt);
+  color: var(--text);
+  border: 2px solid var(--accent-dark);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ================================================================
+ * Action bar (built by src/main.js)
+ * ================================================================ */
+
+.action-bar {
+  position: absolute;
+  top: 68px;
+  right: var(--spacing-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  z-index: 90;
+}
+
+.action-btn {
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--panel);
+  color: var(--text);
+  border: 3px solid var(--accent-dark);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+  box-shadow: 0 4px 0 var(--panel-lip), 0 6px 12px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.action-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: #2a1806;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 var(--panel-lip), 0 9px 16px rgba(0, 0, 0, 0.4);
+}
+
+.action-btn:active:not(:disabled) {
+  transform: translateY(3px);
+  box-shadow: none;
+}
+
+/* ================================================================
+ * PWA install button (src/ui/pwa.js builds it as
+ * `el('button', 'pwa-install-btn hidden', ...)` and homes it inside #actions,
+ * i.e. the action bar above — so it lays out as a flex item of .action-bar but
+ * deliberately does NOT carry .action-btn: this rule is fully self-contained
+ * (its own display, padding, min-height, border, radius, font and shadow) so
+ * the install CTA reads as a distinct green "sticker" chip rather than an
+ * ordinary action-btn. Declared after .action-btn anyway, so that even if a
+ * future change does add both classes source order still resolves in favour
+ * of this one (same specificity: a single class each).
+ * ================================================================ */
+
+.pwa-install-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  min-height: 44px;
+  min-width: 44px;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  background: linear-gradient(135deg, var(--good), #23c98f);
+  color: #062f22;
+  border: 3px solid var(--good-dark);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+  box-shadow: 0 4px 0 var(--good-dark), 0 8px 16px rgba(0, 0, 0, 0.4);
+  animation: pwaInstallPulse 2.4s ease-in-out infinite;
+}
+
+.pwa-install-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #5cf0bf, var(--good));
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 var(--good-dark), 0 11px 20px rgba(0, 0, 0, 0.45);
+}
+
+.pwa-install-btn:active:not(:disabled) {
+  transform: translateY(3px);
+  box-shadow: none;
+}
+
+.pwa-install-btn.hidden {
+  display: none !important;
+}
+
+@keyframes pwaInstallPulse {
+  0%, 100% {
+    box-shadow: 0 4px 0 var(--good-dark), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 0 rgba(47, 230, 166, 0.5);
+  }
+  50% {
+    box-shadow: 0 4px 0 var(--good-dark), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 8px rgba(47, 230, 166, 0);
+  }
+}
+
+/* ================================================================
+ * Build drawer internals (built by src/ui/panels.js)
+ * ================================================================ */
+
+.build-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 40vh;
+}
+
+/* Grab handle for the mobile bottom-sheet drawer (see the phone-mode media
+ * query near the end of this file). Hidden on desktop/tablet where the
+ * drawer isn't collapsible, in case panels.js renders it unconditionally. */
+.drawer-handle {
+  display: none;
+}
+
+.build-panel-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: 0 var(--spacing-md);
+  background: var(--panel);
+  border-bottom: 2px solid var(--panel-alt);
+}
+
+.build-panel-header .panel-tabs {
+  flex: 1 1 auto;
+  border-bottom: none;
+  background: transparent;
+}
+
+.panel-tab-btn {
+  flex: 1;
+  padding: var(--spacing-md) var(--spacing-sm);
+  border: none;
+  border-bottom: 4px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.panel-tab-btn:hover:not(:disabled) {
+  background: var(--panel-alt);
+  color: var(--text);
+  transform: none;
+  box-shadow: none;
+}
+
+.panel-tab-btn.is-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--panel-alt);
+}
+
+.panel-x10-toggle {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.panel-x10-toggle input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.build-panel-rows {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: var(--spacing-md);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--spacing-sm);
+}
+
+.panel-row {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--panel-alt);
+  border: 2px solid rgba(255, 183, 3, 0.35);
+  border-radius: var(--radius-md);
+}
+
+.panel-row-info {
+  min-width: 0;
+  text-align: right;
+}
+
+.panel-row-name {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.panel-row-desc {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.panel-row-owned {
+  color: var(--text);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.panel-row-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--spacing-xs);
+  flex: 0 0 auto;
+}
+
+.panel-row-cost {
+  color: var(--gold);
+  text-shadow: var(--gold-outline);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.panel-buy-btn {
+  padding: var(--spacing-xs) var(--spacing-md);
+  font-size: 13px;
+}
+
+.panel-buy-btn.is-disabled {
+  opacity: 0.5;
+}
+
+/* ================================================================
+ * Offline earnings report (built by src/main.js)
+ * ================================================================ */
+
+.offline-away {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.offline-total {
+  color: var(--gold);
+  text-shadow: var(--gold-outline);
+  font-size: 30px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.offline-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  min-width: min(320px, 80vw);
+}
+
+.offline-row {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: var(--panel-alt);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.offline-row-amount {
+  color: var(--good);
+  font-weight: 700;
+}
+
+.offline-actions {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: center;
+  gap: var(--spacing-sm);
+}
+
+/* ================================================================
+ * Phone mode — Pixel 8 Pro target: 412×915 CSS px portrait (matches
+ * max-width:640px) and ~915×412 landscape (matches max-height:480px,
+ * since its *width* stays well above 640px when rotated). Both
+ * conditions get the full touch layout below; a second, narrower block
+ * further down layers extra shrinkage on top for the short-landscape case.
+ *
+ * Build-drawer contract (owned/toggled by src/ui/panels.js):
+ *   .build-panel.is-collapsed / .build-panel.is-expanded / .drawer-handle
+ * The sheet's geometry is driven by `transform: translateY()` on
+ * .build-panel itself, not by resizing #game — so collapsing/expanding
+ * never triggers a canvas relayout and needs no ResizeObserver wiring.
+ * #game's own height is fixed to the *collapsed* strip's height and
+ * doesn't change with the toggle: the expanded sheet is a fixed-position
+ * overlay that visually covers part of the floor instead.
+ * ================================================================ */
+@media (max-width: 640px), (max-height: 480px) {
+  /* --- HUD: compact height, safe-area already handled by the base rule
+     via --safe-top, just retune the numbers for a phone. --- */
+  .hud {
+    height: calc(52px + var(--safe-top));
+    padding: calc(var(--spacing-sm) + var(--safe-top)) calc(var(--spacing-sm) + var(--safe-right))
+      var(--spacing-sm) calc(var(--spacing-sm) + var(--safe-left));
+    gap: var(--spacing-sm);
+  }
+
+  #game {
+    height: calc(100% - var(--drawer-collapsed-h) - var(--safe-bottom));
+  }
+
+  /* --- Action bar: horizontal scrolling row of round chips, pinned under
+     the HUD so it never eats the floor and never collides with the
+     bottom-left zoom cluster. --- */
+  .action-bar {
+    position: fixed;
+    top: calc(52px + var(--safe-top) + var(--spacing-xs));
+    left: calc(var(--spacing-xs) + var(--safe-left));
+    right: calc(var(--spacing-xs) + var(--safe-right));
+    bottom: auto;
+    flex-direction: row-reverse;
+    flex-wrap: nowrap;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-xs) var(--spacing-lg);
+    -webkit-mask-image: linear-gradient(
+      to left,
+      transparent 0,
+      #000 20px,
+      #000 calc(100% - 20px),
+      transparent 100%
+    );
+    mask-image: linear-gradient(to left, transparent 0, #000 20px, #000 calc(100% - 20px), transparent 100%);
+  }
+
+  .action-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .action-btn {
+    flex: 0 0 auto;
+    min-height: 44px;
+    min-width: 44px;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 12px;
+    padding: 0 var(--spacing-md);
+  }
+
+  /* --- Zoom cluster: stays bottom-left, clear of the drawer's collapsed
+     strip and never overlapped by the action bar (which lives up top
+     here). --- */
+  .zoom-controls {
+    left: calc(var(--spacing-sm) + var(--safe-left));
+    bottom: calc(var(--drawer-collapsed-h) + var(--safe-bottom) + var(--spacing-sm));
+    transition: opacity 0.2s ease;
+  }
+
+  .zoom-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* The cluster's bottom offset above is only correct for the COLLAPSED
+     strip height. Once the sheet expands to 62dvh it slides up underneath
+     the (still-pinned, z-index:90) cluster, whose three 48px circles then
+     sit on top of the build-panel-rows content and steal its taps. Hide
+     and disable it whenever .build-panel carries the is-expanded state
+     class panels.js already toggles — no JS change needed since
+     .zoom-controls is always appended after #panels under #ui-layer. */
+  .panels:has(.build-panel.is-expanded) ~ .zoom-controls {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* --- Build drawer -> collapsible bottom sheet. .panels becomes a fixed,
+     unstyled host; .build-panel itself is the visual sheet card and owns
+     the slide animation.
+     .panels' own box is sized by .build-panel's layout height (62vh),
+     NOT by the transform that slides most of that height off-screen —
+     transforms never shrink the layout box. Left at pointer-events:auto
+     (inherited from #ui-layer > *), that full-height, mostly invisible
+     box would sit above the canvas (z-index 80 > canvas) and swallow
+     every touch over the collapsed drawer's "off-screen" two-thirds.
+     Kill hit-testing on the host itself and re-enable it only on the
+     visible sheet card. --- */
+  .panels {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: auto;
+    max-height: none;
+    background: transparent;
+    border-top: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    overflow: visible;
+    z-index: 80;
+    pointer-events: none;
+  }
+
+  .build-panel {
+    position: relative;
+    height: 62vh;
+    height: 62dvh;
+    max-height: none;
+    background: linear-gradient(to top, rgba(28, 18, 51, 0.99), rgba(28, 18, 51, 0.96));
+    border-top: 4px solid var(--accent);
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    box-shadow: var(--shadow-lg);
+    backdrop-filter: blur(8px);
+    overflow: hidden;
+    padding-bottom: var(--safe-bottom);
+    pointer-events: auto;
+    /* Collapsed baseline: only --drawer-collapsed-h stays on-screen. This
+       is also the pre-JS default, so the drawer starts collapsed even
+       before panels.js has attached a state class. */
+    transform: translateY(calc(100% - var(--drawer-collapsed-h) - var(--safe-bottom)));
+    transition: transform 0.32s cubic-bezier(0.22, 0.9, 0.32, 1);
+    will-change: transform;
+  }
+
+  .build-panel.is-collapsed {
+    transform: translateY(calc(100% - var(--drawer-collapsed-h) - var(--safe-bottom)));
+  }
+
+  .build-panel.is-expanded {
+    transform: translateY(0);
+  }
+
+  .drawer-handle {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    height: 18px;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  .drawer-handle::before {
+    content: '';
+    width: 40px;
+    height: 5px;
+    border-radius: 999px;
+    background: var(--text-muted);
+    opacity: 0.6;
+  }
+
+  .build-panel-header {
+    flex: 0 0 auto;
+    min-height: 46px;
+    padding: 0 var(--spacing-sm);
+    gap: var(--spacing-sm);
+  }
+
+  .panel-tab-btn {
+    min-height: 44px;
+    padding: 0 var(--spacing-xs);
+    font-size: 12px;
+  }
+
+  .panel-x10-toggle {
+    /* The native checkbox glyph stays small, but the whole label is the
+       click target (labels toggle their input on tap anywhere inside),
+       so pad it out to a real 44px tap target. */
+    min-height: 44px;
+    padding: var(--spacing-xs) 0;
+    font-size: 11px;
+  }
+
+  .build-panel-rows {
+    flex: 1 1 auto;
+    grid-template-columns: 1fr;
+    padding: var(--spacing-sm);
+    gap: var(--spacing-sm);
+  }
+
+  .panel-row {
+    padding: var(--spacing-sm);
+  }
+
+  .panel-buy-btn {
+    min-height: 44px;
+    min-width: 44px;
+    padding: var(--spacing-xs) var(--spacing-md);
+  }
+
+  /* --- General tap-target hygiene: every button at least 44×44 CSS px,
+     touch-only device (no mouse/keyboard to fall back on). --- */
+  button,
+  .tab,
+  .card {
+    min-height: 44px;
+  }
+
+  .modal-close {
+    width: 44px;
+    height: 44px;
+  }
+
+  .pwa-install-btn {
+    font-size: 12px;
+    padding: var(--spacing-xs) var(--spacing-md);
+  }
+}
+
+/* ================================================================
+ * Short landscape phone (e.g. Pixel 8 Pro rotated, ~915×412 CSS px) —
+ * layers on top of the phone-mode block above: smaller HUD, a smaller
+ * collapsed drawer strip, and a shorter expanded sheet since vertical
+ * space is scarce. Placed after the block above so this :root override
+ * wins the cascade for --drawer-collapsed-h.
+ * ================================================================ */
+@media (max-height: 480px) {
+  :root {
+    --drawer-collapsed-h: 48px;
+  }
+
+  .hud {
+    height: calc(40px + var(--safe-top));
+    padding-top: calc(var(--spacing-xs) + var(--safe-top));
+    padding-bottom: var(--spacing-xs);
+  }
+
+  .hud-stat-value {
+    font-size: 12px;
+  }
+
+  .hud-stat-label {
+    font-size: 10px;
+  }
+
+  .hud-world {
+    display: none;
+  }
+
+  .action-bar {
+    top: calc(40px + var(--safe-top) + var(--spacing-xs));
+  }
+
+  .build-panel {
+    height: 70vh;
+    height: 70dvh;
+  }
+
+  .build-panel-header {
+    min-height: 36px;
+  }
+
+  .panel-tab-btn {
+    min-height: 36px;
+    font-size: 11px;
+  }
+
+  .drawer-handle {
+    height: 12px;
+  }
+
+  .drawer-handle::before {
+    width: 32px;
+    height: 4px;
+  }
+}
+
+/* Respect the user's motion preference on the drawer's slide animation. */
+@media (prefers-reduced-motion: reduce) {
+  .build-panel {
+    transition: none;
+  }
+
+  .pwa-install-btn {
+    animation: none;
+  }
+}
+
+/* ================================================================
+ * Utilities
+ * ================================================================ */
+
+.hidden {
+  display: none !important;
+}
+
+.invisible {
+  visibility: hidden;
+}
+
+.text-center {
+  text-align: center;
+}
+
+.text-right {
+  text-align: right;
+}
+
+.text-left {
+  text-align: left;
+}
+
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gap-sm {
+  gap: var(--spacing-sm);
+}
+
+.gap-md {
+  gap: var(--spacing-md);
+}
+
+.gap-lg {
+  gap: var(--spacing-lg);
+}
