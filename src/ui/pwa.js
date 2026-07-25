@@ -17,9 +17,16 @@
  * PATHS: './sw.js' with { scope: './' }. Relative on purpose — the app is served
  * from the GitHub Pages subpath /idle-casino-manager/, where a leading '/' would
  * resolve to the domain root and 404. The same code works on localhost.
+ *
+ * i18n: every visible string routes through core/i18n.js's t(), and re-renders
+ * on 'locale:changed' (see mount()'s onLocaleChanged subscription). One gap:
+ * there is no locale key for the update bar's transient "updating…" busy state
+ * (setUpdateBarBusy) — it borrows 'hud.loading' ("Loading…"/"טוען…") as the
+ * closest existing string. A dedicated 'pwa.updating' key would read better.
  */
 
 import { bus } from '../core/events.js';
+import { t, dir, onLocaleChanged } from '../core/i18n.js';
 
 /* ------------------------------------------------------------------ *
  *  Module state
@@ -36,6 +43,15 @@ let installBtn = null;
 
 /** @type {HTMLElement|null} */
 let updateBar = null;
+
+/** @type {HTMLElement|null} the message span inside updateBar, for retexting. */
+let updateBarText = null;
+
+/** @type {HTMLButtonElement|null} the "רענן"/"Refresh" button inside updateBar. */
+let updateBarRefreshBtn = null;
+
+/** @type {HTMLButtonElement|null} the "×" dismiss button inside updateBar. */
+let updateBarDismissBtn = null;
 
 /** @type {ServiceWorkerRegistration|null} */
 let registration = null;
@@ -64,14 +80,21 @@ let fallbackMode = false;
 /** @type {HTMLElement|null} */
 let installHelpBar = null;
 
+/** @type {HTMLElement|null} the message span inside installHelpBar, for retexting. */
+let installHelpBarText = null;
+
+/** @type {HTMLButtonElement|null} the "×" dismiss button inside installHelpBar. */
+let installHelpBarDismissBtn = null;
+
+/** Unsubscribe handle for the 'locale:changed' listener, set once on mount. */
+let localeUnsubscribe = null;
+
 /** update() runs 4x/second; do the real work at most once a second. */
 let lastUpdateCheck = 0;
 
 /** Throttle for the opportunistic registration.update() poll. */
 let lastVersionPoll = 0;
 const VERSION_POLL_MS = 15 * 60 * 1000;
-
-const INSTALL_LABEL = '📲 התקן אפליקציה';
 
 /* ------------------------------------------------------------------ *
  *  Guards / tiny helpers
@@ -268,13 +291,21 @@ function ensureInstallButton() {
   // repaint the call-to-action in the ordinary panel colour. It still lays out
   // correctly as a flex item of .action-bar.
   // Born hidden; showInstallButton() is the only thing that reveals it.
-  const btn = el('button', 'pwa-install-btn hidden', INSTALL_LABEL);
+  const btn = el('button', 'pwa-install-btn hidden', t('pwa.install'));
   btn.type = 'button';
-  btn.title = 'התקנת המשחק על המסך הראשי';
-  btn.setAttribute('aria-label', 'התקן אפליקציה');
+  btn.title = t('pwa.installTitle');
+  btn.setAttribute('aria-label', t('pwa.installAria'));
   btn.addEventListener('click', onInstallClick);
   installBtn = btn;
   return btn;
+}
+
+/** Re-apply the active locale's strings to the install button, in place. */
+function retextInstallButton() {
+  if (!installBtn) return;
+  installBtn.textContent = t('pwa.install');
+  installBtn.title = t('pwa.installTitle');
+  installBtn.setAttribute('aria-label', t('pwa.installAria'));
 }
 
 function showInstallButton() {
@@ -327,7 +358,7 @@ function onInstallClick() {
     choice
       .then((result) => {
         const outcome = result && result.outcome;
-        if (outcome === 'accepted') busToast('מתקין את המשחק…', 'good');
+        if (outcome === 'accepted') busToast(t('pwa.installing'), 'good');
       })
       .catch(() => {})
       .then(() => {
@@ -352,27 +383,45 @@ function ensureUpdateBar() {
   injectStyles();
 
   const bar = el('div', 'pwa-update-bar');
-  bar.setAttribute('dir', 'rtl');
+  bar.setAttribute('dir', dir());
   bar.setAttribute('role', 'status');
 
-  bar.appendChild(el('span', 'pwa-update-text', 'גרסה חדשה של המשחק זמינה'));
+  const text = el('span', 'pwa-update-text', t('pwa.update'));
+  bar.appendChild(text);
 
-  const refresh = el('button', 'pwa-update-btn', 'רענן');
+  const refresh = el('button', 'pwa-update-btn', t('pwa.refresh'));
   refresh.type = 'button';
   refresh.addEventListener('click', applyUpdate);
   bar.appendChild(refresh);
 
   const dismiss = el('button', 'pwa-update-dismiss', '×');
   dismiss.type = 'button';
-  dismiss.title = 'סגור';
-  dismiss.setAttribute('aria-label', 'סגור');
+  dismiss.title = t('common.close');
+  dismiss.setAttribute('aria-label', t('common.close'));
   dismiss.addEventListener('click', hideUpdateBar);
   bar.appendChild(dismiss);
 
   const host = rootHost || document.getElementById('ui-layer') || document.body;
   if (host) safe(() => host.appendChild(bar));
   updateBar = bar;
+  updateBarText = text;
+  updateBarRefreshBtn = refresh;
+  updateBarDismissBtn = dismiss;
   return bar;
+}
+
+/** Re-apply the active locale's strings (and writing direction) to the update bar. */
+function retextUpdateBar() {
+  if (!updateBar) return;
+  updateBar.setAttribute('dir', dir());
+  if (updateBarText) updateBarText.textContent = t('pwa.update');
+  if (updateBarRefreshBtn && !updateBarRefreshBtn.disabled) {
+    updateBarRefreshBtn.textContent = t('pwa.refresh');
+  }
+  if (updateBarDismissBtn) {
+    updateBarDismissBtn.title = t('common.close');
+    updateBarDismissBtn.setAttribute('aria-label', t('common.close'));
+  }
 }
 
 function showUpdateBar() {
@@ -390,6 +439,27 @@ function hideUpdateBar() {
   if (updateBar) updateBar.classList.remove('is-visible');
 }
 
+/**
+ * Bug fix: applyUpdate() used to hide the bar immediately, before the reload
+ * it triggers actually happens — a tap in that window (postMessage sent /
+ * fallback timer pending) discarded both the pending update AND the only UI
+ * that could retry it. Locking the bar (disabled buttons, "updating…" label)
+ * instead keeps it visible and inert until the reload really occurs; doReload()
+ * restores it (see below) if a reload turns out not to happen after all.
+ */
+function setUpdateBarBusy(busy) {
+  if (!updateBar) return;
+  if (updateBarRefreshBtn) {
+    updateBarRefreshBtn.disabled = !!busy;
+    // No dedicated "updating…" locale key exists yet (closest is hud.loading,
+    // a generic "Loading…"/"טוען…" — see the integrator note in this module's
+    // header comment); reusing it beats leaving the busy state untranslated.
+    updateBarRefreshBtn.textContent = busy ? t('hud.loading') : t('pwa.refresh');
+  }
+  if (updateBarDismissBtn) updateBarDismissBtn.disabled = !!busy;
+  if (updateBar) updateBar.classList.toggle('is-updating', !!busy);
+}
+
 /* ------------------------------------------------------------------ *
  *  Install help bar (manual-install fallback)
  * ------------------------------------------------------------------ *
@@ -398,31 +468,45 @@ function hideUpdateBar() {
  * layout/styling so it matches the update bar without new CSS.
  */
 
+function installHelpMessage() {
+  return isLikelyInAppBrowser() ? t('pwa.helpInApp') : t('pwa.helpChrome');
+}
+
 function ensureInstallHelpBar() {
   if (installHelpBar || !hasDom()) return installHelpBar;
   injectStyles();
 
   const bar = el('div', 'pwa-update-bar pwa-install-help');
-  bar.setAttribute('dir', 'rtl');
+  bar.setAttribute('dir', dir());
   bar.setAttribute('role', 'status');
 
-  const msg = isLikelyInAppBrowser()
-    ? 'הדף נפתח בדפדפן פנימי (למשל בתוך WhatsApp) שלא יכול להתקין אפליקציות ולא שומר את ההתקדמות באותו מקום. פתחו את תפריט ⋮ ובחרו "פתח בדפדפן" (Chrome), ואז בתפריט ⋮ של Chrome בחרו "התקנת אפליקציה".'
-    : 'פתחו את תפריט ⋮ של Chrome ובחרו "התקנת אפליקציה" כדי להוסיף את המשחק למסך הבית.';
-
-  bar.appendChild(el('span', 'pwa-update-text', msg));
+  const text = el('span', 'pwa-update-text', installHelpMessage());
+  bar.appendChild(text);
 
   const dismiss = el('button', 'pwa-update-dismiss', '×');
   dismiss.type = 'button';
-  dismiss.title = 'סגור';
-  dismiss.setAttribute('aria-label', 'סגור');
+  dismiss.title = t('common.close');
+  dismiss.setAttribute('aria-label', t('common.close'));
   dismiss.addEventListener('click', hideInstallHelpBar);
   bar.appendChild(dismiss);
 
   const host = rootHost || document.getElementById('ui-layer') || document.body;
   if (host) safe(() => host.appendChild(bar));
   installHelpBar = bar;
+  installHelpBarText = text;
+  installHelpBarDismissBtn = dismiss;
   return bar;
+}
+
+/** Re-apply the active locale's strings (and writing direction) to the install-help bar. */
+function retextInstallHelpBar() {
+  if (!installHelpBar) return;
+  installHelpBar.setAttribute('dir', dir());
+  if (installHelpBarText) installHelpBarText.textContent = installHelpMessage();
+  if (installHelpBarDismissBtn) {
+    installHelpBarDismissBtn.title = t('common.close');
+    installHelpBarDismissBtn.setAttribute('aria-label', t('common.close'));
+  }
 }
 
 function showInstallHelpBar() {
@@ -441,7 +525,7 @@ function announceUpdate(worker) {
   if (!worker) return;
   if (waitingWorker === worker && updateBar && updateBar.classList.contains('is-visible')) return;
   waitingWorker = worker;
-  busToast('גרסה חדשה זמינה — הקישו רענן', 'info');
+  busToast(t('pwa.updateToast'), 'info');
   showUpdateBar();
 }
 
@@ -451,15 +535,22 @@ function announceUpdate(worker) {
  * the new page load is served by the NEW worker, not the outgoing one.
  */
 function applyUpdate() {
-  hideUpdateBar();
-  refreshRequested = true;
-
   // Cross-reload guard: if we somehow land back here right after a refresh,
-  // do not enter a reload loop — just drop the request.
+  // do not enter a reload loop — just drop the request. Checked BEFORE
+  // touching the bar/state so a stray tap in this window is a true no-op
+  // instead of locking a bar that will never get unlocked.
   if (recentlyReloaded()) {
-    refreshRequested = false;
     return;
   }
+
+  refreshRequested = true;
+  // Bug fix: this used to call hideUpdateBar() here, before the reload it
+  // triggers actually happens. A tap in the few seconds between sending
+  // SKIP_WAITING and the controllerchange-driven reload firing discarded
+  // BOTH the pending update and the only UI that could retry it. Lock the
+  // bar visible/disabled instead; only a real reload (or doReload() failing
+  // to start one) should end this state — see setUpdateBarBusy / doReload.
+  setUpdateBarBusy(true);
   markReloaded();
 
   const worker = waitingWorker || (registration && registration.waiting);
@@ -482,7 +573,19 @@ function applyUpdate() {
 function doReload() {
   if (reloading) return;
   reloading = true;
-  safe(() => window.location.reload());
+  const started = safe(() => {
+    window.location.reload();
+    return true;
+  });
+  if (!started) {
+    // The reload never actually got underway (e.g. `window.location.reload`
+    // threw, or is unavailable). Restore the bar to its normal, actionable
+    // state rather than leaving the player staring at a disabled "updating…"
+    // bar that will never resolve — a future tap can try again.
+    reloading = false;
+    refreshRequested = false;
+    setUpdateBarBusy(false);
+  }
 }
 
 /* sessionStorage can throw in some privacy modes — always guarded. */
@@ -595,7 +698,7 @@ export function mount(root) {
       deferredPrompt = null;
       hideInstallButton();
       hideInstallHelpBar();
-      busToast('המשחק הותקן! אפשר לפתוח אותו ממסך הבית 🎰', 'good');
+      busToast(t('pwa.installed'), 'good');
     })
   );
 
@@ -643,6 +746,16 @@ export function mount(root) {
       if (!document.hidden) pollForUpdate();
     })
   );
+
+  // Re-render every persistent element this module owns whenever the player
+  // switches language, so none of them are stuck showing the old locale.
+  if (!localeUnsubscribe) {
+    localeUnsubscribe = onLocaleChanged(() => {
+      retextInstallButton();
+      retextUpdateBar();
+      retextInstallHelpBar();
+    });
+  }
 }
 
 /**

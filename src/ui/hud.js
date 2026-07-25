@@ -1,8 +1,11 @@
 /**
  * hud.js — top status bar: world name, money, income/sec, diamonds,
  * tier badge with progress to next tier, live guest count, a
- * toast area listening to the 'toast' event, and a floating zoom-control
- * cluster for the camera.
+ * toast area listening to the 'toast' event, a floating zoom-control
+ * cluster for the camera, and a compact language toggle (see
+ * buildLangButton()) that flips between the locales in src/core/i18n.js.
+ * All strings come from t(); a 'locale:changed' subscription in mount()
+ * (see applyStaticLabels()) re-applies them instantly on language switch.
  *
  * export function mount(root)
  * export function update()
@@ -38,6 +41,7 @@ import {
   SYSTEM_KEYS
 } from '../core/config.js';
 import { fmtMoney, incomeRate } from '../core/economy.js';
+import { t, dir, getLocale, setLocale, onLocaleChanged, hasKey } from '../core/i18n.js';
 
 const TOAST_LIFE_MS = 3400;
 const TOAST_FADE_MS = 400;
@@ -66,10 +70,11 @@ function safeNumber(v, fallback) {
 /** Build one "label: value" HUD stat block. */
 function buildStat(className, labelText) {
   const wrap = el('div', 'hud-stat ' + className);
-  wrap.appendChild(el('span', 'hud-stat-label', labelText));
+  const label = el('span', 'hud-stat-label', labelText);
+  wrap.appendChild(label);
   const value = el('span', 'hud-stat-value', '—');
   wrap.appendChild(value);
-  return { wrap, value };
+  return { wrap, label, value };
 }
 
 /**
@@ -77,14 +82,14 @@ function buildStat(className, labelText) {
  * Purely presentational: emits 'camera:zoom' events on the bus and never
  * touches the renderer or camera state directly.
  */
-function buildZoomButton(className, glyph, hebrewLabel, dir) {
+function buildZoomButton(className, glyph, label, camDir) {
   const btn = el('button', 'zoom-btn ' + className, glyph);
   btn.type = 'button';
-  btn.title = hebrewLabel;
-  btn.setAttribute('aria-label', hebrewLabel);
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
   btn.addEventListener('click', () => {
     try {
-      bus.emit('camera:zoom', { dir });
+      bus.emit('camera:zoom', { dir: camDir });
     } catch (err) {
       // never let a UI click crash the game loop
     }
@@ -94,19 +99,69 @@ function buildZoomButton(className, glyph, hebrewLabel, dir) {
 
 function buildZoomControls() {
   const cluster = el('div', 'zoom-controls');
-  cluster.setAttribute('dir', 'rtl');
+  cluster.setAttribute('dir', dir());
 
-  const zoomInBtn = buildZoomButton('zoom-btn-in', '+', 'התקרב', 'in');
+  const zoomInBtn = buildZoomButton('zoom-btn-in', '+', t('zoom.in'), 'in');
   const zoomLabel = el('span', 'zoom-label', '100%');
-  const zoomOutBtn = buildZoomButton('zoom-btn-out', '−', 'התרחק', 'out');
-  const zoomFitBtn = buildZoomButton('zoom-btn-fit', '⛶', 'מרכז מפה', 'fit');
+  const zoomOutBtn = buildZoomButton('zoom-btn-out', '−', t('zoom.out'), 'out');
+  const zoomFitBtn = buildZoomButton('zoom-btn-fit', '⛶', t('zoom.fit'), 'fit');
 
   cluster.appendChild(zoomInBtn);
   cluster.appendChild(zoomLabel);
   cluster.appendChild(zoomOutBtn);
   cluster.appendChild(zoomFitBtn);
 
-  return { cluster, zoomLabel };
+  return { cluster, zoomLabel, zoomInBtn, zoomOutBtn, zoomFitBtn };
+}
+
+/**
+ * Compact glyph shown on the language toggle itself. lang.he / lang.en are the
+ * full display names ("עברית" / "English") — too long for a 44px round button —
+ * so the tables also carry lang.he.short / lang.en.short. Those two keys hold
+ * the SAME value in both locales on purpose: a language switcher must always
+ * name each language in its own script, never translated.
+ */
+function shortLangLabel(id) {
+  return t(id === 'en' ? 'lang.en.short' : 'lang.he.short');
+}
+
+/**
+ * Small round language toggle: shows the CURRENT locale's compact glyph and
+ * flips to the other locale on tap. Sized >=44x44 for touch (see mount()'s
+ * note on why that overflows #hud's own ~28-34px content box by design —
+ * harmless since neither #hud nor #ui-layer clip their children).
+ * Kept entirely self-styled (inline styles) since this file does not own
+ * styles.css; only CSS custom properties already defined globally are read.
+ */
+function buildLangButton() {
+  const btn = el('button', 'hud-lang-btn', shortLangLabel(getLocale()));
+  btn.type = 'button';
+  btn.setAttribute('aria-label', t('lang.label'));
+  btn.style.flex = '0 0 auto';
+  btn.style.width = '44px';
+  btn.style.height = '44px';
+  btn.style.minWidth = '44px';
+  btn.style.minHeight = '44px';
+  btn.style.padding = '0';
+  btn.style.borderRadius = '50%';
+  btn.style.border = '2px solid var(--accent-dark, #7a4a1a)';
+  btn.style.background = 'var(--accent, #b8752f)';
+  btn.style.color = '#2a1806';
+  btn.style.fontWeight = '800';
+  btn.style.fontSize = '13px';
+  btn.style.lineHeight = '1';
+  btn.style.display = 'flex';
+  btn.style.alignItems = 'center';
+  btn.style.justifyContent = 'center';
+  btn.style.cursor = 'pointer';
+  btn.addEventListener('click', () => {
+    try {
+      setLocale(getLocale() === 'he' ? 'en' : 'he');
+    } catch (err) {
+      // never let a UI click crash the game
+    }
+  });
+  return btn;
 }
 
 /**
@@ -129,16 +184,16 @@ export function mount(root) {
   if (!root || typeof root.appendChild !== 'function') return;
 
   const bar = el('div', 'hud-bar');
-  bar.setAttribute('dir', 'rtl');
+  bar.setAttribute('dir', dir());
 
   const worldBlock = el('div', 'hud-world');
-  const worldName = el('span', 'hud-world-name', 'טוען…');
+  const worldName = el('span', 'hud-world-name', t('hud.loading'));
   worldBlock.appendChild(worldName);
 
-  const money = buildStat('hud-money', 'קופה:');
-  const income = buildStat('hud-income', 'הכנסה/שנייה:');
-  const diamonds = buildStat('hud-diamonds', 'יהלומים:');
-  const guests = buildStat('hud-guests', 'אורחים:');
+  const money = buildStat('hud-money', t('hud.money'));
+  const income = buildStat('hud-income', t('hud.income'));
+  const diamonds = buildStat('hud-diamonds', t('hud.diamonds'));
+  const guests = buildStat('hud-guests', t('hud.guests'));
 
   const tierBlock = el('div', 'hud-tier');
   const tierBadge = el('span', 'hud-tier-badge', '—');
@@ -170,9 +225,24 @@ export function mount(root) {
   toasts.style.bottom = 'calc(var(--drawer-collapsed-h) + var(--safe-bottom) + 12px)';
   toastArea = toasts;
 
-  const { cluster: zoomControls, zoomLabel } = buildZoomControls();
+  const { cluster: zoomControls, zoomLabel, zoomInBtn, zoomOutBtn, zoomFitBtn } = buildZoomControls();
+
+  const langBtn = buildLangButton();
 
   root.appendChild(bar);
+  /*
+   * langBtn is a sibling of `bar` directly under #hud (root), not a child
+   * of the scrollable/masked .hud-bar — #hud is itself the outer flex row
+   * (see styles.css `#hud { display:flex; ... gap: var(--spacing-lg) }`),
+   * so this becomes its own reserved flex slot at the far edge of the top
+   * bar (the same edge as the last hud-stat, "guests") with the existing
+   * gap keeping it clear of every stat, never overlapping money/income.
+   * That edge slot is also only ~28-34px tall (see #hud's padding math),
+   * shorter than the 44px this button must be for touch, so the button
+   * deliberately overflows a few px above/below the bar — harmless, since
+   * neither #hud nor #ui-layer clip their children.
+   */
+  root.appendChild(langBtn);
 
   /*
    * Both .hud-toast-area and .zoom-controls are `position: fixed` and
@@ -197,13 +267,63 @@ export function mount(root) {
     guests: guests.value,
     tierBadge,
     tierFill,
-    zoomLabel
+    zoomLabel,
+    bar,
+    zoomControls,
+    moneyLabel: money.label,
+    incomeLabel: income.label,
+    diamondsLabel: diamonds.label,
+    guestsLabel: guests.label,
+    zoomInBtn,
+    zoomOutBtn,
+    zoomFitBtn,
+    langBtn
   };
 
   bus.on('toast', handleToast);
   bus.on('camera:changed', handleCameraChanged);
+  onLocaleChanged(() => {
+    applyStaticLabels();
+    update();
+  });
 
   update();
+}
+
+/**
+ * Re-applies every static (non-data-driven) HUD string from the current
+ * locale. Called once implicitly by mount() (the strings are already
+ * correct on first build) and again on every 'locale:changed' event so a
+ * language switch updates the HUD instantly without a remount.
+ */
+function applyStaticLabels() {
+  if (!els) return;
+  try {
+    if (els.bar) els.bar.setAttribute('dir', dir());
+    if (els.zoomControls) els.zoomControls.setAttribute('dir', dir());
+    if (els.moneyLabel) els.moneyLabel.textContent = t('hud.money');
+    if (els.incomeLabel) els.incomeLabel.textContent = t('hud.income');
+    if (els.diamondsLabel) els.diamondsLabel.textContent = t('hud.diamonds');
+    if (els.guestsLabel) els.guestsLabel.textContent = t('hud.guests');
+    if (els.zoomInBtn) {
+      els.zoomInBtn.title = t('zoom.in');
+      els.zoomInBtn.setAttribute('aria-label', t('zoom.in'));
+    }
+    if (els.zoomOutBtn) {
+      els.zoomOutBtn.title = t('zoom.out');
+      els.zoomOutBtn.setAttribute('aria-label', t('zoom.out'));
+    }
+    if (els.zoomFitBtn) {
+      els.zoomFitBtn.title = t('zoom.fit');
+      els.zoomFitBtn.setAttribute('aria-label', t('zoom.fit'));
+    }
+    if (els.langBtn) {
+      els.langBtn.textContent = shortLangLabel(getLocale());
+      els.langBtn.setAttribute('aria-label', t('lang.label'));
+    }
+  } catch (err) {
+    // never let a relabel pass crash the HUD
+  }
 }
 
 /*
@@ -252,6 +372,23 @@ function totalInvestment(w) {
   return total;
 }
 
+/**
+ * Resolve a world's display name via its i18n nameKey, falling back to the
+ * legacy 'world.<key>.name' pattern, a literal name field, and finally the
+ * generic HUD fallback. Mirrors main.js's own worldName() helper.
+ * @param {any} def worldDefById(id) result, possibly null
+ */
+function resolveWorldName(def) {
+  if (def) {
+    if (typeof def.nameKey === 'string' && hasKey(def.nameKey)) return t(def.nameKey);
+    if (typeof def.key === 'string' && hasKey('world.' + def.key + '.name')) {
+      return t('world.' + def.key + '.name');
+    }
+    if (typeof def.name === 'string' && def.name.length > 0) return def.name;
+  }
+  return t('hud.casino');
+}
+
 function computeTierProgress(w) {
   const rawTier = Math.floor(safeNumber(w.tier, 1));
   const tierIdx = Math.max(1, Math.min(3, rawTier));
@@ -259,7 +396,7 @@ function computeTierProgress(w) {
   const nextDef = tierIdx < 3 ? tierDef(tierIdx + 1) : null;
   const invested = Math.max(0, safeNumber(totalInvestment(w), 0));
 
-  if (!nextDef) return { name: curDef ? curDef.name : '', pct: 1, isMax: true };
+  if (!nextDef) return { name: curDef ? t(curDef.nameKey) : '', pct: 1, isMax: true };
 
   const curMin = curDef ? curDef.minInvestment : 0;
   const nextMin = nextDef.minInvestment;
@@ -268,7 +405,7 @@ function computeTierProgress(w) {
   if (!Number.isFinite(pct)) pct = 0;
   pct = Math.max(0, Math.min(1, pct));
 
-  return { name: curDef ? curDef.name : '', pct, isMax: false };
+  return { name: curDef ? t(curDef.nameKey) : '', pct, isMax: false };
 }
 
 export function update() {
@@ -283,7 +420,7 @@ export function update() {
   if (!w) return;
 
   const def = worldDefById(w.id);
-  els.worldName.textContent = def && def.name ? String(def.name) : 'קזינו';
+  els.worldName.textContent = resolveWorldName(def);
 
   try {
     els.money.textContent = fmtMoney(safeNumber(w.money, 0));
@@ -298,9 +435,9 @@ export function update() {
     perSec = 0;
   }
   try {
-    els.income.textContent = fmtMoney(safeNumber(perSec, 0)) + '/ש׳';
+    els.income.textContent = fmtMoney(safeNumber(perSec, 0)) + t('unit.perSecond');
   } catch (err) {
-    els.income.textContent = '0/ש׳';
+    els.income.textContent = '0' + t('unit.perSecond');
   }
 
   const diamondCount = Math.floor(safeNumber(state.diamonds, 0));
@@ -309,7 +446,7 @@ export function update() {
   els.guests.textContent = String(Math.max(0, Math.floor(liveGuestCount)));
 
   const progress = computeTierProgress(w);
-  els.tierBadge.textContent = progress.name || '—';
+  els.tierBadge.textContent = progress.name ? t('hud.tier') + ' ' + progress.name : '—';
   els.tierFill.style.width = Math.round(progress.pct * 100) + '%';
   els.tierFill.classList.toggle('is-max', progress.isMax === true);
 }

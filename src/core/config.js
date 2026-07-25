@@ -138,7 +138,7 @@ export const CONFIG = {
     clickRadius: 22,
     types: {
       thief: {
-        label: 'גנב',
+        labelKey: 'event.thief.label',
         weight: 34,
         ttl: 9,               // seconds before it escapes
         speed: 58,
@@ -153,7 +153,7 @@ export const CONFIG = {
         color: '#c0392b'
       },
       brinks: {
-        label: 'ברינקס',
+        labelKey: 'event.brinks.label',
         weight: 14,
         ttl: 16,
         speed: 26,
@@ -167,7 +167,7 @@ export const CONFIG = {
         color: '#7f8c8d'
       },
       counter: {
-        label: 'סופר קלפים',
+        labelKey: 'event.counter.label',
         weight: 22,
         ttl: 22,
         speed: 0,             // sits at a table
@@ -182,7 +182,7 @@ export const CONFIG = {
         color: '#8e44ad'
       },
       angry: {
-        label: 'לקוח זועם',
+        labelKey: 'event.angry.label',
         weight: 20,
         ttl: 14,
         speed: 18,
@@ -198,7 +198,7 @@ export const CONFIG = {
         color: '#e67e22'
       },
       vip: {
-        label: 'אורח VIP',
+        labelKey: 'event.vip.label',
         weight: 10,
         ttl: 20,
         speed: 34,
@@ -225,12 +225,12 @@ export const CONFIG = {
       betMax: 1e12,
       /** Bet types the player can pick. */
       bets: [
-        { key: 'red',    name: 'אדום',   payout: 2,  chance: 18 / 37 },
-        { key: 'black',  name: 'שחור',   payout: 2,  chance: 18 / 37 },
-        { key: 'even',   name: 'זוגי',   payout: 2,  chance: 18 / 37 },
-        { key: 'odd',    name: 'אי-זוגי', payout: 2, chance: 18 / 37 },
-        { key: 'dozen',  name: 'תריסר',  payout: 3,  chance: 12 / 37 },
-        { key: 'single', name: 'מספר בודד', payout: 12, chance: 1 / 37 }
+        { key: 'red',    nameKey: 'mini.roulette.bet.red',    payout: 2,  chance: 18 / 37 },
+        { key: 'black',  nameKey: 'mini.roulette.bet.black',  payout: 2,  chance: 18 / 37 },
+        { key: 'even',   nameKey: 'mini.roulette.bet.even',   payout: 2,  chance: 18 / 37 },
+        { key: 'odd',    nameKey: 'mini.roulette.bet.odd',    payout: 2,  chance: 18 / 37 },
+        { key: 'dozen',  nameKey: 'mini.roulette.bet.dozen',  payout: 3,  chance: 12 / 37 },
+        { key: 'single', nameKey: 'mini.roulette.bet.single', payout: 12, chance: 1 / 37 }
       ],
       /** On a win the player may take the cash or a global income boost. */
       boostMult: 2.5,
@@ -261,18 +261,18 @@ export const CONFIG = {
     adCooldownMs: 240000,
     adBoost: { mult: 2, seconds: 180 },
     adDiamonds: 2,
-    noAdsPrice: '₪19.90',
+    noAdsPriceKey: 'shop.price.noAds',
     diamondPacks: [
-      { key: 'small',  name: 'חופן יהלומים', amount: 80,   price: '₪9.90' },
-      { key: 'medium', name: 'שק יהלומים',   amount: 500,  price: '₪39.90' },
-      { key: 'large',  name: 'כספת יהלומים', amount: 1500, price: '₪99.90' },
-      { key: 'mega',   name: 'מכרה יהלומים', amount: 5000, price: '₪299.90' }
+      { key: 'small',  nameKey: 'shop.pack.small',  priceKey: 'shop.price.small',  amount: 80 },
+      { key: 'medium', nameKey: 'shop.pack.medium', priceKey: 'shop.price.medium', amount: 500 },
+      { key: 'large',  nameKey: 'shop.pack.large',  priceKey: 'shop.price.large',  amount: 1500 },
+      { key: 'mega',   nameKey: 'shop.pack.mega',   priceKey: 'shop.price.mega',   amount: 5000 }
     ],
     /** Things diamonds buy. */
     diamondSpends: [
-      { key: 'skipCooldown', name: 'איפוס זמן צינון', cost: 15 },
-      { key: 'instantCash',  name: 'מזומן מיידי (שעה)', cost: 25, seconds: 3600 },
-      { key: 'megaBoost',    name: 'בוסטר ×5 ל-10 דקות', cost: 40, mult: 5, seconds: 600 }
+      { key: 'skipCooldown', nameKey: 'shop.spend.skipCooldown', cost: 15 },
+      { key: 'instantCash',  nameKey: 'shop.spend.instantCash',  cost: 25, seconds: 3600 },
+      { key: 'megaBoost',    nameKey: 'shop.spend.megaBoost',    cost: 40, mult: 5, seconds: 600 }
     ]
   },
 
@@ -301,8 +301,8 @@ export const TIERS = [
   {
     tier: 1,
     key: 'grim',
-    name: 'מתחם מוזנח',
-    desc: 'בטון חשוף, לינוליאום קרוע וניאון מרצד.',
+    nameKey: 'tier.1.name',
+    descKey: 'tier.1.desc',
     minInvestment: CONFIG.tier.thresholds[0],
     incomeMult: CONFIG.tier.incomeMult[0],
     palette: {
@@ -326,8 +326,8 @@ export const TIERS = [
   {
     tier: 2,
     key: 'warm',
-    name: 'מתחם מסודר',
-    desc: 'שטיח מקיר לקיר, תאורה חמה ושולחנות מרופדים.',
+    nameKey: 'tier.2.name',
+    descKey: 'tier.2.desc',
     minInvestment: CONFIG.tier.thresholds[1],
     incomeMult: CONFIG.tier.incomeMult[1],
     palette: {
@@ -351,8 +351,8 @@ export const TIERS = [
   {
     tier: 3,
     key: 'luxury',
-    name: 'מתחם יוקרה',
-    desc: 'שטיחי יוקרה, שנדלירים, עץ וזהב ומסכי לד.',
+    nameKey: 'tier.3.name',
+    descKey: 'tier.3.desc',
     minInvestment: CONFIG.tier.thresholds[2],
     incomeMult: CONFIG.tier.incomeMult[2],
     palette: {
@@ -383,16 +383,25 @@ export const WORLDS = [
   {
     id: 0,
     key: 'industrial',
-    name: 'אזור תעשייה מוזנח',
-    desc: 'מחסן סלוטים חלוד בשולי העיר. לקוחות דלי אמצעים, שכירות זולה, הכל מתחיל כאן.',
+    nameKey: 'world.industrial.name',
+    descKey: 'world.industrial.desc',
     unlockCost: 0,
     incomeMult: 1,
     guestWealthMult: 1,
     spawnMult: 1,
+    // BUGFIX: this used to be a blue-grey/wall pair whose HUE sat right in the
+    // renderer's cyan/turquoise band — paletteFor() in renderer.js force-
+    // saturates every world color (vivid()/hueForce()), so a ~200° input hue
+    // came out as a swimming-pool cyan floor, not grim concrete. Floor/floorAlt
+    // and skirt are re-hued to a steel-blue (~230°) and a rust-brown (~32°)
+    // respectively, well clear of world 3 (cruise)'s genuine turquoise
+    // (~180°). accent/neon were already correct (rust-orange / acid-green)
+    // and are untouched. Verified against renderer.js's paletteFor()/vivid()/
+    // hueTint() math for all 3 tiers — see the fix report for the numbers.
     palette: {
-      floor: '#93a3ab',
-      floorAlt: '#7f929b',
-      wall: '#5f6f78',
+      floor: '#7c829c',
+      floorAlt: '#686d87',
+      wall: '#5f584e',
       accent: '#e8631c',
       neon: '#9dfa3c',
       carpet: '#8a5a34',
@@ -401,15 +410,15 @@ export const WORLDS = [
       faceRight: '#b3480f',
       outline: '#241c14',
       shadow: 'rgba(20,15,10,0.35)',
-      skirt: '#4a5860'
+      skirt: '#473e33'
     },
     unlockedByDefault: true
   },
   {
     id: 1,
     key: 'downtown',
-    name: 'דאונטאון וגאס',
-    desc: 'רחוב ניאון תוסס במרכז העיר. תיירים, שלטי ענק וזרם אורחים בלתי פוסק.',
+    nameKey: 'world.downtown.name',
+    descKey: 'world.downtown.desc',
     unlockCost: 200000,
     incomeMult: 3.6,
     guestWealthMult: 2.4,
@@ -433,8 +442,8 @@ export const WORLDS = [
   {
     id: 2,
     key: 'macau',
-    name: 'מאקאו',
-    desc: 'ריזורט יוקרה על החוף עם מזרקות מים ומהמרים כבדים שמניחים סכומי עתק.',
+    nameKey: 'world.macau.name',
+    descKey: 'world.macau.desc',
     unlockCost: 4500000,
     incomeMult: 14,
     guestWealthMult: 7,
@@ -458,8 +467,8 @@ export const WORLDS = [
   {
     id: 3,
     key: 'cruise',
-    name: 'אוניית קזינו',
-    desc: 'הימורים בלב ים. סיפון צר, מתחמים ייחודיים ואורחים שבויים לכל ההפלגה.',
+    nameKey: 'world.cruise.name',
+    descKey: 'world.cruise.desc',
     unlockCost: 90000000,
     incomeMult: 55,
     guestWealthMult: 18,
@@ -483,8 +492,8 @@ export const WORLDS = [
   {
     id: 4,
     key: 'speakeasy',
-    name: 'שנות ה-20',
-    desc: 'בר מחתרתי מימי היובש. ג׳אז, ויסקי מוברח וגנגסטרים עם כיסים עמוקים.',
+    nameKey: 'world.speakeasy.name',
+    descKey: 'world.speakeasy.desc',
     unlockCost: 1800000000,
     incomeMult: 220,
     guestWealthMult: 46,
@@ -508,8 +517,8 @@ export const WORLDS = [
   {
     id: 5,
     key: 'cyber',
-    name: 'קזינו עתידני',
-    desc: 'הולוגרמות, דילרים רובוטיים ורצפות תאורה. הימורים במהירות האור.',
+    nameKey: 'world.cyber.name',
+    descKey: 'world.cyber.desc',
     unlockCost: 40000000000,
     incomeMult: 900,
     guestWealthMult: 120,
@@ -540,8 +549,8 @@ export const WORLDS = [
 export const VENUES = {
   slots: {
     key: 'slots',
-    name: 'מכונות סלוטים',
-    desc: 'זול לתפעול, הכנסה נמוכה אך יציבה. לא דורש דילר.',
+    nameKey: 'venue.slots.name',
+    descKey: 'venue.slots.desc',
     kind: 'gamble',
     baseCost: 30,
     costGrowth: 1.145,
@@ -560,8 +569,8 @@ export const VENUES = {
   },
   blackjack: {
     key: 'blackjack',
-    name: 'שולחן בלאקג׳ק',
-    desc: 'הכנסה גבוהה, אך כל שולחן חייב דילר משלו.',
+    nameKey: 'venue.blackjack.name',
+    descKey: 'venue.blackjack.desc',
     kind: 'gamble',
     baseCost: 420,
     costGrowth: 1.175,
@@ -580,8 +589,8 @@ export const VENUES = {
   },
   roulette: {
     key: 'roulette',
-    name: 'שולחן רולטה',
-    desc: 'קלאסיקה עם קהל סביב הגלגל. דורש דילר.',
+    nameKey: 'venue.roulette.name',
+    descKey: 'venue.roulette.desc',
     kind: 'gamble',
     baseCost: 1600,
     costGrowth: 1.185,
@@ -600,8 +609,8 @@ export const VENUES = {
   },
   craps: {
     key: 'craps',
-    name: 'שולחן קרפס',
-    desc: 'שולחן קבוצתי רועש שיוצר התקהלות ומושך אורחים נוספים לקזינו.',
+    nameKey: 'venue.craps.name',
+    descKey: 'venue.craps.desc',
     kind: 'gamble',
     baseCost: 6200,
     costGrowth: 1.195,
@@ -620,8 +629,8 @@ export const VENUES = {
   },
   sportsbook: {
     key: 'sportsbook',
-    name: 'זירת ספורט לייב',
-    desc: 'קיר מסכים להימורי ספורט ומרוצים, עם אירועי מרוץ תקופתיים ובונוס.',
+    nameKey: 'venue.sportsbook.name',
+    descKey: 'venue.sportsbook.desc',
     kind: 'gamble',
     baseCost: 24000,
     costGrowth: 1.2,
@@ -643,8 +652,8 @@ export const VENUES = {
   },
   wheel: {
     key: 'wheel',
-    name: 'גלגל המזל',
-    desc: 'הפעלה תקופתית שמייצרת התקהלות ומטר טיפים לקזינו.',
+    nameKey: 'venue.wheel.name',
+    descKey: 'venue.wheel.desc',
     kind: 'gamble',
     baseCost: 95000,
     costGrowth: 1.21,
@@ -665,8 +674,8 @@ export const VENUES = {
   },
   vip: {
     key: 'vip',
-    name: 'חדר VIP',
-    desc: 'מעט אורחים, סכומי עתק. דורש דילר צמוד ושירות ללא דופי.',
+    nameKey: 'venue.vip.name',
+    descKey: 'venue.vip.desc',
     kind: 'gamble',
     baseCost: 450000,
     costGrowth: 1.225,
@@ -686,8 +695,8 @@ export const VENUES = {
   },
   bar: {
     key: 'bar',
-    name: 'בר',
-    desc: 'משקה מרענן את הסבלנות ומעלה משמעותית את הנטייה לסיכון.',
+    nameKey: 'venue.bar.name',
+    descKey: 'venue.bar.desc',
     kind: 'service',
     baseCost: 260,
     costGrowth: 1.16,
@@ -706,8 +715,8 @@ export const VENUES = {
   },
   buffet: {
     key: 'buffet',
-    name: 'בופה',
-    desc: 'ארוחה חמה שמחזירה אנרגיה ומאריכה את זמן השהייה בקזינו.',
+    nameKey: 'venue.buffet.name',
+    descKey: 'venue.buffet.desc',
     kind: 'service',
     baseCost: 1300,
     costGrowth: 1.17,
@@ -726,8 +735,8 @@ export const VENUES = {
   },
   showroom: {
     key: 'showroom',
-    name: 'אולם הופעות',
-    desc: 'מופע חי שממלא סבלנות ואנרגיה גם יחד ומקפיץ את מצב הרוח בקזינו.',
+    nameKey: 'venue.showroom.name',
+    descKey: 'venue.showroom.desc',
     kind: 'service',
     baseCost: 16000,
     costGrowth: 1.19,
@@ -753,8 +762,8 @@ export const VENUES = {
 export const STATIONS = {
   security: {
     key: 'security',
-    name: 'עמדת בידוק',
-    desc: 'בדיקת תעודות בכניסה. תור ארוך מבריח אורחים עוד לפני שנכנסו.',
+    nameKey: 'station.security.name',
+    descKey: 'station.security.desc',
     baseCost: 90,
     costGrowth: 1.19,
     baseThroughput: 0.55,     // guests per second per unit at level 1
@@ -766,8 +775,8 @@ export const STATIONS = {
   },
   cashier: {
     key: 'cashier',
-    name: 'קופת צ׳יפים',
-    desc: 'המרת מזומן לצ׳יפים בכניסה ופדיון ביציאה — צוואר הבקבוק המרכזי.',
+    nameKey: 'station.cashier.name',
+    descKey: 'station.cashier.desc',
     baseCost: 140,
     costGrowth: 1.2,
     baseThroughput: 0.45,
@@ -779,8 +788,8 @@ export const STATIONS = {
   },
   tokenBooth: {
     key: 'tokenBooth',
-    name: 'עמדת פריטה',
-    desc: 'אסימונים למתחם הסלוטים. בלעדיה שורות הסלוטים משביתות את עצמן.',
+    nameKey: 'station.tokenBooth.name',
+    descKey: 'station.tokenBooth.desc',
     baseCost: 320,
     costGrowth: 1.185,
     baseThroughput: 0.8,
@@ -802,8 +811,8 @@ export const STATIONS = {
 export const STAFF = {
   dealers: {
     key: 'dealers',
-    name: 'דילרים',
-    desc: 'כל שולחן דילר חייב דילר. שדרוג מעלה את מהירות החלוקה ואת אחוז הבית.',
+    nameKey: 'staff.dealers.name',
+    descKey: 'staff.dealers.desc',
     baseCost: 180,
     costGrowth: 1.185,
     effectPerLevel: 0.09,     // +9% table output per level
@@ -813,8 +822,8 @@ export const STAFF = {
   },
   guards: {
     key: 'guards',
-    name: 'מאבטחים',
-    desc: 'מגיבים לאירועים בזמן אמת: גנבים, רמאים ולקוחות זועמים.',
+    nameKey: 'staff.guards.name',
+    descKey: 'staff.guards.desc',
     baseCost: 260,
     costGrowth: 1.19,
     effectPerLevel: 0.12,     // +12% response radius & speed per level
@@ -824,8 +833,8 @@ export const STAFF = {
   },
   cleaners: {
     key: 'cleaners',
-    name: 'עובדי ניקיון',
-    desc: 'שומרים על ניקיון הרצפה ומקצרים זמני השבתה של מתחמים.',
+    nameKey: 'staff.cleaners.name',
+    descKey: 'staff.cleaners.desc',
     baseCost: 150,
     costGrowth: 1.175,
     effectPerLevel: 0.1,
@@ -838,8 +847,8 @@ export const STAFF = {
   },
   cameras: {
     key: 'cameras',
-    name: 'מצלמות אבטחה',
-    desc: 'מזהות אוטומטית גנבים ורמאים ומגדילות את סיכויי התפיסה.',
+    nameKey: 'staff.cameras.name',
+    descKey: 'staff.cameras.desc',
     baseCost: 400,
     costGrowth: 1.2,
     effectPerLevel: 0.15,
@@ -857,8 +866,8 @@ export const STAFF = {
 export const SYSTEMS = {
   hvac: {
     key: 'hvac',
-    name: 'מיזוג וחמצן',
-    desc: 'אוויר צח מאריך את זמן השהייה: אנרגיה של האורחים יורדת לאט יותר.',
+    nameKey: 'system.hvac.name',
+    descKey: 'system.hvac.desc',
     baseCost: 900,
     costGrowth: 1.24,
     effectPerLevel: 0.06,     // -6% energy drain per level (multiplicative floor applied)
@@ -867,8 +876,8 @@ export const SYSTEMS = {
   },
   lighting: {
     key: 'lighting',
-    name: 'תאורה ואווירה',
-    desc: 'תאורה נכונה מרגיעה תורים ומעלה את הנטייה של האורחים להמר.',
+    nameKey: 'system.lighting.name',
+    descKey: 'system.lighting.desc',
     baseCost: 1100,
     costGrowth: 1.245,
     effectPerLevel: 0.05,     // -5% patience drain, +5% risk appetite per level

@@ -17,6 +17,7 @@ import { bus, toast } from '../core/events.js';
 import { state, activeWorld, save } from '../core/state.js';
 import { CONFIG, WORLDS } from '../core/config.js';
 import { incomeRate, fmtMoney, tryUnlockWorld } from '../core/economy.js';
+import { t, onLocaleChanged } from '../core/i18n.js';
 
 /* ------------------------------------------------------------------ *
  *  Module state
@@ -26,6 +27,7 @@ let root = null;
 let modalContainer = null;
 let mapBackdrop = null;
 let mapGrid = null;
+let mapTitleEl = null;
 
 /** worldId -> { unlocked: bool, moneyEl, incomeEl, missingEl, btn } for the
  *  currently-rendered card, so money-only updates can patch text/disabled
@@ -156,9 +158,9 @@ function handleUnlock(id) {
   }
   const after = state.worlds && state.worlds[id] && state.worlds[id].unlocked === true;
   if (!before && !after) {
-    toast('אין מספיק כסף כדי לפתוח את הסניף הזה', 'bad');
+    toast(t('map.notEnough'), 'bad');
   } else if (!before && after) {
-    toast('סניף חדש נפתח!', 'good');
+    toast(t('map.unlocked'), 'good');
   } else if (!ok && after) {
     // world was already unlocked by another path; nothing to announce.
   }
@@ -180,9 +182,11 @@ function buildCard(def) {
     card.style.boxShadow = '0 0 0 1px var(--good)';
   }
 
-  card.appendChild(el('div', 'card-title', def.name));
+  const nameKey = 'world.' + def.key + '.name';
+  const descKey = 'world.' + def.key + '.desc';
+  card.appendChild(el('div', 'card-title', t(nameKey)));
 
-  const desc = el('div', null, def.desc);
+  const desc = el('div', null, t(descKey));
   desc.style.color = 'var(--text-muted)';
   desc.style.fontSize = '12px';
   desc.style.lineHeight = '1.5';
@@ -193,7 +197,7 @@ function buildCard(def) {
   const refs = { unlocked: !!(w && w.unlocked) };
 
   if (w && w.unlocked) {
-    const moneyEl = el('div', 'card-cost', 'קופה: ' + fmtMoney(Math.max(0, Number(w.money) || 0)));
+    const moneyEl = el('div', 'card-cost', t('map.money', { amount: fmtMoney(Math.max(0, Number(w.money) || 0)) }));
     card.appendChild(moneyEl);
     let perSec = 0;
     try {
@@ -201,7 +205,7 @@ function buildCard(def) {
     } catch (err) {
       perSec = 0;
     }
-    const incomeEl = el('div', 'card-count', 'הכנסה: ' + fmtMoney(Math.max(0, Number(perSec) || 0)) + '/שנ׳');
+    const incomeEl = el('div', 'card-count', t('map.income', { amount: fmtMoney(Math.max(0, Number(perSec) || 0)) + t('unit.perSecondFull') }));
     card.appendChild(incomeEl);
     refs.moneyEl = moneyEl;
     refs.incomeEl = incomeEl;
@@ -209,28 +213,28 @@ function buildCard(def) {
     const btn = document.createElement('button');
     btn.type = 'button';
     if (isActive) {
-      btn.textContent = 'הסניף הנוכחי';
+      btn.textContent = t('map.current');
       btn.className = 'secondary';
       btn.disabled = true;
     } else {
-      btn.textContent = 'עבור לסניף';
+      btn.textContent = t('map.switch');
       btn.className = 'success';
       btn.addEventListener('click', () => switchWorld(def.id));
     }
     btn.style.marginTop = '6px';
     card.appendChild(btn);
   } else {
-    card.appendChild(el('div', 'card-cost', 'עלות פתיחה: ' + fmtMoney(Math.max(0, Number(def.unlockCost) || 0))));
+    card.appendChild(el('div', 'card-cost', t('map.unlockCost', { amount: fmtMoney(Math.max(0, Number(def.unlockCost) || 0)) })));
 
     const funds = affordableFunds();
     const missing = Math.max(0, (Number(def.unlockCost) || 0) - funds);
-    const missingEl = el('div', 'card-count', missing > 0 ? 'חסר: ' + fmtMoney(missing) : 'מוכן לפתיחה');
+    const missingEl = el('div', 'card-count', missing > 0 ? t('map.missing', { amount: fmtMoney(missing) }) : t('map.ready'));
     card.appendChild(missingEl);
     refs.missingEl = missingEl;
 
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.textContent = 'פתח סניף';
+    btn.textContent = t('map.unlock');
     btn.disabled = missing > 0;
     btn.style.marginTop = '6px';
     btn.addEventListener('click', () => handleUnlock(def.id));
@@ -288,7 +292,7 @@ function updateValues() {
       return;
     }
     if (nowUnlocked) {
-      if (refs.moneyEl) refs.moneyEl.textContent = 'קופה: ' + fmtMoney(Math.max(0, Number(w.money) || 0));
+      if (refs.moneyEl) refs.moneyEl.textContent = t('map.money', { amount: fmtMoney(Math.max(0, Number(w.money) || 0)) });
       if (refs.incomeEl) {
         let perSec = 0;
         try {
@@ -296,12 +300,12 @@ function updateValues() {
         } catch (err) {
           perSec = 0;
         }
-        refs.incomeEl.textContent = 'הכנסה: ' + fmtMoney(Math.max(0, Number(perSec) || 0)) + '/שנ׳';
+        refs.incomeEl.textContent = t('map.income', { amount: fmtMoney(Math.max(0, Number(perSec) || 0)) + t('unit.perSecondFull') });
       }
     } else {
       const funds = affordableFunds();
       const missing = Math.max(0, (Number(def.unlockCost) || 0) - funds);
-      if (refs.missingEl) refs.missingEl.textContent = missing > 0 ? 'חסר: ' + fmtMoney(missing) : 'מוכן לפתיחה';
+      if (refs.missingEl) refs.missingEl.textContent = missing > 0 ? t('map.missing', { amount: fmtMoney(missing) }) : t('map.ready');
       if (refs.btn) refs.btn.disabled = missing > 0;
     }
   }
@@ -311,6 +315,7 @@ function closeMap() {
   if (mapBackdrop && mapBackdrop.parentNode) mapBackdrop.parentNode.removeChild(mapBackdrop);
   mapBackdrop = null;
   mapGrid = null;
+  mapTitleEl = null;
   cardRefs = [];
 }
 
@@ -320,11 +325,14 @@ function showWorldMap() {
   const backdrop = el('div', 'modal-backdrop');
   const modal = el('div', 'modal');
 
-  const title = el('div', 'modal-title', 'מפת עולמות');
+  const title = el('div', 'modal-title', t('map.title'));
   modal.appendChild(title);
+  mapTitleEl = title;
 
   const closeBtn = el('button', 'modal-close', '×');
   closeBtn.type = 'button';
+  closeBtn.title = t('common.close');
+  closeBtn.setAttribute('aria-label', t('common.close'));
   closeBtn.addEventListener('click', closeMap);
   modal.appendChild(closeBtn);
 
@@ -385,6 +393,15 @@ export function mount(mountRoot) {
   // Optional integration hook: other modules may `bus.emit('ui:openWorldMap')`
   // instead of importing openWorldMap() directly.
   bus.on('ui:openWorldMap', openWorldMap);
+
+  // Re-render every visible string (title + cards) the instant the player
+  // switches language. Safe to run unconditionally: renderGrid() only ever
+  // rebuilds buttons from state, it never drops in-flight money.
+  onLocaleChanged(() => {
+    if (!mapBackdrop) return;
+    if (mapTitleEl) mapTitleEl.textContent = t('map.title');
+    renderGrid();
+  });
 }
 
 export function update() {

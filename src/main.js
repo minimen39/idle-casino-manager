@@ -2,6 +2,9 @@
  * main.js — boot + integration layer.
  *
  * Responsibilities (nothing else lives here):
+ *   0. Boot prelude, before ANY module renders: put the document on a
+ *      trailing-slash URL (so the service worker's './' scope matches) and
+ *      initialise the locale (so <html lang/dir> and the first paint are right).
  *   1. Boot the persisted state, credit offline earnings and show the report.
  *   2. Build the floor plan and construct the three sims for the active branch.
  *   3. Mount every UI module into its DOM host and provide the buttons that
@@ -24,6 +27,12 @@
  * flag exists for exactly this) so the 1s tick below is the single source of
  * earnings for the active branch. The guest sim still tracks everything and
  * still produces the floating "+$" popups, which are forwarded to the renderer.
+ * That forwarding (drainPopups) is the ONLY place a guest's money becomes a
+ * popup — a tip must never draw its own on top of it.
+ *
+ * i18n: every string main.js puts on screen comes from t(). initLocale() runs
+ * before anything is mounted, and 'locale:changed' re-labels what is already on
+ * screen (see applyLocaleToUI) — switching language never needs a reload.
  */
 
 import {
@@ -42,6 +51,14 @@ import {
   multiplyOfflineReward
 } from './core/state.js';
 import { incomeRate, addMoney, fmtMoney, fmtTime, recomputeTier } from './core/economy.js';
+import {
+  initLocale,
+  t,
+  hasKey,
+  dir as localeDir,
+  getLocale,
+  onLocaleChanged
+} from './core/i18n.js';
 import { buildLayout } from './sim/layout.js';
 import { GuestSim } from './sim/guests.js';
 import { StaffSim } from './sim/staff.js';
@@ -53,6 +70,47 @@ import * as panels from './ui/panels.js';
 import * as worldMap from './ui/worldMap.js';
 import * as minigames from './ui/minigames.js';
 import * as monetization from './ui/monetization.js';
+
+/* ------------------------------------------------------------------ *
+ *  Boot prelude — runs at module evaluation, before anything is mounted
+ *
+ *  1. ensureTrailingSlash(): a WhatsApp/shared link without the trailing slash
+ *     ('…/idle-casino-manager') sits OUTSIDE the service worker's './' scope,
+ *     so Chrome shows its offline page even with the whole app cached, and every
+ *     relative URL (./sw.js, ./manifest.webmanifest) resolves one level too
+ *     high. history.replaceState fixes the document URL in place — no
+ *     navigation, so it can never loop.
+ *  2. initLocale(): restores the saved language (or picks one from
+ *     navigator.language) and stamps <html lang/dir> before the first paint.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Rewrite '…/path' to '…/path/' when the document was opened without the
+ * trailing slash. No-op for a file that names itself (…/index.html), for
+ * non-http(s) documents (file://), and whenever it is already correct.
+ * Uses history.replaceState — never a reload — so it cannot loop.
+ */
+function ensureTrailingSlash() {
+  try {
+    if (typeof location === 'undefined' || typeof history === 'undefined') return;
+    if (typeof history.replaceState !== 'function') return;
+    const proto = String(location.protocol || '');
+    if (proto !== 'http:' && proto !== 'https:') return;
+
+    const path = String(location.pathname || '');
+    if (path === '' || path.charAt(path.length - 1) === '/') return;
+    const lower = path.toLowerCase();
+    if (lower.slice(-5) === '.html' || lower.slice(-4) === '.htm') return;
+
+    const next = path + '/' + String(location.search || '') + String(location.hash || '');
+    history.replaceState(history.state, '', next);
+  } catch (err) {
+    /* A blocked/opaque history is not worth failing the boot over. */
+  }
+}
+
+ensureTrailingSlash();
+initLocale();
 
 /**
  * ./ui/pwa.js (install prompt / offline banner / update toast) is pulled in with
@@ -152,7 +210,20 @@ let lastPortrait = null;
 
 /** @type {HTMLButtonElement|null} The rewarded-ad action-bar button, kept so its cooldown state can be refreshed. */
 let adActionBtn = null;
-const AD_BTN_LABEL = '🎬 פרסומת';
+
+/**
+ * Every action-bar button with the locale keys it was built from, so a language
+ * switch can re-label it in place instead of rebuilding the bar.
+ * @type {{btn:HTMLButtonElement, labelKey:string, titleKey:string}[]}
+ */
+const actionButtons = [];
+
+/**
+ * Set while an offline-earnings modal is on screen: re-applies every string in
+ * it for the current locale. Cleared when the modal is dismissed.
+ * @type {(()=>void)|null}
+ */
+let offlineModalRelocalize = null;
 
 /* ------------------------------------------------------------------ *
  *  Tiny DOM helpers (every lookup is guarded)
@@ -813,8 +884,12 @@ function onCanvasClick(cx, cy) {
     if (guest) {
       const tipped = safe(() => guestSim.tip(guest), 'guests.tip');
       if (Number.isFinite(tipped) && tipped > 0) {
+        // The wallet credit is main.js's job (the guest sim's own income is
+        // gated behind payToEconomy=false), but the POPUP is not: guestSim.tip()
+        // already pushed one onto guestSim.popups, which drainPopups() forwards
+        // to renderer.popup() on the next frame. Drawing a second one here
+        // stacked two "+$" labels on top of each other for a single tip.
         addMoney(activeWorld(), tipped);
-        renderer.popup(guest.x, guest.y - 8, '+' + fmtMoney(tipped), '#ffd76a');
       }
     }
   }
@@ -824,6 +899,25 @@ function onCanvasClick(cx, cy) {
  *  UI wiring
  * ------------------------------------------------------------------ */
 
+/** Every statically mounted UI module, in mount order. */
+const UI_MODULES = [
+  { mod: hud, label: 'hud' },
+  { mod: panels, label: 'panels' },
+  { mod: worldMap, label: 'worldMap' },
+  { mod: minigames, label: 'minigames' },
+  { mod: monetization, label: 'monetization' }
+];
+
+/**
+ * Optional hooks a UI module may export so main.js can tell it to rebuild its
+ * DOM for a new locale. The first one found wins; a module that re-labels
+ * itself inside update() (or from its own 'locale:changed' subscription) needs
+ * none of them. main.js never re-mounts a module blindly: worldMap, minigames,
+ * monetization and pwa all share the #modals host, so clearing it would take
+ * the other three (and any open modal) down with it.
+ */
+const LOCALE_HOOKS = ['relocalize', 'applyLocale', 'rebuild', 'remount'];
+
 function refreshUI() {
   safe(() => hud.update(), 'hud.update');
   safe(() => panels.update(), 'panels.update');
@@ -831,6 +925,85 @@ function refreshUI() {
   safe(() => minigames.update(), 'minigames.update');
   safe(() => monetization.update(), 'monetization.update');
   updatePwaUI();
+}
+
+/** Call a module's locale hook, if it exposes one. */
+function relocalizeModule(mod, label) {
+  if (!mod) return;
+  for (let i = 0; i < LOCALE_HOOKS.length; i++) {
+    const name = LOCALE_HOOKS[i];
+    if (typeof mod[name] === 'function') {
+      safe(() => mod[name](), label + '.' + name);
+      return;
+    }
+  }
+}
+
+/**
+ * The language changed: re-label everything that is already on screen.
+ * <html lang/dir> is already updated by i18n.setLocale() before this runs.
+ */
+function applyLocaleToUI() {
+  applyDocumentTitle();
+  applyManifestLink();
+  relabelActionBar();
+  if (offlineModalRelocalize) safe(() => offlineModalRelocalize(), 'offlineModal.relocalize');
+  for (let i = 0; i < UI_MODULES.length; i++) {
+    relocalizeModule(UI_MODULES[i].mod, UI_MODULES[i].label);
+  }
+  relocalizeModule(pwaUI, 'pwa');
+  // Anything the renderer baked into a cached layer (tier / venue captions)
+  // has to be drawn again in the new language.
+  if (renderer && typeof renderer.invalidate === 'function') {
+    safe(() => renderer.invalidate(), 'renderer.invalidate');
+  }
+  refreshUI();
+}
+
+/** Keep the browser tab / task-switcher title in the active language. */
+function applyDocumentTitle() {
+  safe(() => {
+    if (typeof document === 'undefined') return;
+    const title = t('app.title');
+    if (title && title !== 'app.title') document.title = title;
+  }, 'document.title');
+}
+
+/**
+ * Point <link rel="manifest"> at the active locale's manifest, so the install
+ * prompt and the home-screen icon carry the player's language rather than the
+ * Hebrew default baked into index.html.
+ *
+ * index.html ships './manifest.webmanifest' (Hebrew) as the pre-JS default; this
+ * swaps it to './manifest.<locale>.webmanifest' at boot and again on every
+ * language change. Every locale manifest declares the SAME "id": "./", so the
+ * browser treats them as one installed app — swapping the href re-reads the
+ * metadata instead of creating a second install entry.
+ *
+ * The href stays relative for the GitHub Pages subpath (see the header note).
+ */
+function applyManifestLink() {
+  safe(() => {
+    if (typeof document === 'undefined' || !document.querySelector) return;
+    const link = document.querySelector('link[rel="manifest"]');
+    if (!link || typeof link.setAttribute !== 'function') return;
+    const next = './manifest.' + getLocale() + '.webmanifest';
+    if (link.getAttribute('href') === next) return;
+    link.setAttribute('href', next);
+  }, 'manifest.link');
+
+  // iOS Safari ignores the manifest's short_name for "Add to Home Screen" and
+  // reads this meta instead, so the manifest swap alone would still leave an
+  // English player with a Hebrew home-screen icon.
+  safe(() => {
+    if (typeof document === 'undefined' || !document.querySelector) return;
+    const meta = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    if (!meta || typeof meta.setAttribute !== 'function') return;
+    const name = t('app.shortName');
+    if (!name || name === 'app.shortName') return;
+    if (meta.getAttribute('content') === name) return;
+    meta.setAttribute('content', name);
+  }, 'appleTitle.meta');
 }
 
 /** update() on the PWA module, if it loaded and exposes one. */
@@ -861,12 +1034,19 @@ function mountPwaUI() {
   });
 }
 
-function actionButton(bar, label, title, onClick) {
-  const btn = el('button', 'action-btn', label);
+/**
+ * @param {HTMLElement} bar
+ * @param {string} labelKey locale key for the visible label
+ * @param {string} titleKey locale key for the tooltip
+ * @param {Function} onClick
+ */
+function actionButton(bar, labelKey, titleKey, onClick) {
+  const btn = el('button', 'action-btn', t(labelKey));
   btn.type = 'button';
-  btn.title = title;
+  btn.title = t(titleKey);
   btn.addEventListener('click', onClick);
   bar.appendChild(btn);
+  actionButtons.push({ btn, labelKey, titleKey });
   return btn;
 }
 
@@ -876,17 +1056,39 @@ function mountActionBar() {
 
   const bar = el('div', 'action-bar');
   bar.id = 'actions';
-  bar.setAttribute('dir', 'rtl');
+  bar.setAttribute('dir', localeDir());
 
-  actionButton(bar, '🌍 עולמות', 'מפת העולמות', () => safe(() => worldMap.openWorldMap(), 'openWorldMap'));
-  actionButton(bar, '🎡 רולטה', 'מיני-משחק רולטה', () => safe(() => minigames.openRoulette(), 'openRoulette'));
-  actionButton(bar, '🃏 בלאקג׳ק', 'מיני-משחק בלאקג׳ק', () => safe(() => minigames.openBlackjack(), 'openBlackjack'));
-  actionButton(bar, '💎 חנות', 'חנות יהלומים', () => safe(() => monetization.openShop(), 'openShop'));
-  adActionBtn = actionButton(bar, AD_BTN_LABEL, 'צפה בפרסומת לבונוס', () =>
+  actionButton(bar, 'action.worlds', 'action.worldsTitle', () =>
+    safe(() => worldMap.openWorldMap(), 'openWorldMap')
+  );
+  actionButton(bar, 'action.roulette', 'action.rouletteTitle', () =>
+    safe(() => minigames.openRoulette(), 'openRoulette')
+  );
+  actionButton(bar, 'action.blackjack', 'action.blackjackTitle', () =>
+    safe(() => minigames.openBlackjack(), 'openBlackjack')
+  );
+  actionButton(bar, 'action.shop', 'action.shopTitle', () =>
+    safe(() => monetization.openShop(), 'openShop')
+  );
+  adActionBtn = actionButton(bar, 'ad.button', 'ad.buttonTitle', () =>
     safe(() => monetization.tryWatchAd(null), 'tryWatchAd')
   );
 
   layer.appendChild(bar);
+  updateAdButton();
+}
+
+/** Re-translate the action bar in place after a language switch. */
+function relabelActionBar() {
+  const bar = byId('actions');
+  if (bar && bar.setAttribute) bar.setAttribute('dir', localeDir());
+  for (let i = 0; i < actionButtons.length; i++) {
+    const entry = actionButtons[i];
+    if (!entry || !entry.btn) continue;
+    entry.btn.title = t(entry.titleKey);
+    // The ad button's label depends on its cooldown, so updateAdButton() owns it.
+    if (entry.btn !== adActionBtn) entry.btn.textContent = t(entry.labelKey);
+  }
   updateAdButton();
 }
 
@@ -898,11 +1100,11 @@ function updateAdButton() {
     const seconds = safe(() => monetization.getAdCooldownSeconds(), 'getAdCooldownSeconds') || 0;
     adActionBtn.disabled = true;
     adActionBtn.classList.add('is-disabled');
-    adActionBtn.textContent = 'זמין בעוד ' + seconds + 's';
+    adActionBtn.textContent = t('ad.buttonCooldown', { seconds });
   } else {
     adActionBtn.disabled = false;
     adActionBtn.classList.remove('is-disabled');
-    adActionBtn.textContent = AD_BTN_LABEL;
+    adActionBtn.textContent = t('ad.button');
   }
 }
 
@@ -910,29 +1112,50 @@ function updateAdButton() {
  *  Offline earnings report
  * ------------------------------------------------------------------ */
 
+/**
+ * Localised display name of a branch, resilient to however config.js ends up
+ * exposing it: an explicit nameKey wins, then the conventional
+ * 'world.<key>.name', then whatever literal name the def still carries, and
+ * finally the generic "Branch N".
+ * @param {any} def worldDefById(id) result, possibly null
+ * @param {number} worldId
+ */
+function worldName(def, worldId) {
+  if (def) {
+    if (typeof def.nameKey === 'string' && hasKey(def.nameKey)) return t(def.nameKey);
+    if (typeof def.key === 'string' && hasKey('world.' + def.key + '.name')) {
+      return t('world.' + def.key + '.name');
+    }
+    if (typeof def.name === 'string' && def.name.length > 0) return def.name;
+  }
+  return t('offline.branch', { id: worldId });
+}
+
 function showOfflineModal(report) {
   const host = modalsHost();
   if (!host || !report || !(report.total > 0)) {
     if (report && report.total > 0) {
-      toast('הרווחת ' + fmtMoney(report.total) + ' בזמן שלא היית', 'good');
+      toast(t('offline.toast', { amount: fmtMoney(report.total) }), 'good');
     }
     return;
   }
 
   const backdrop = el('div', 'modal-backdrop');
   const modal = el('div', 'modal');
-  modal.setAttribute('dir', 'rtl');
+  modal.setAttribute('dir', localeDir());
 
-  modal.appendChild(el('div', 'modal-title', 'רווחי אופליין'));
+  const titleEl = el('div', 'modal-title', t('offline.title'));
+  modal.appendChild(titleEl);
 
   const close = el('button', 'modal-close', '×');
   close.type = 'button';
+  close.title = t('common.close');
+  close.setAttribute('aria-label', t('common.close'));
   modal.appendChild(close);
 
   const content = el('div', 'modal-content');
-  content.appendChild(
-    el('div', 'offline-away', 'היית מחוץ למשחק ' + fmtTime(report.seconds))
-  );
+  const awayEl = el('div', 'offline-away', t('offline.away', { time: fmtTime(report.seconds) }));
+  content.appendChild(awayEl);
 
   const totalEl = el('div', 'offline-total', fmtMoney(report.total));
   content.appendChild(totalEl);
@@ -945,20 +1168,21 @@ function showOfflineModal(report) {
     if (!entry) continue;
     const def = worldDefById(entry.worldId);
     const row = el('div', 'offline-row');
-    row.appendChild(el('span', 'offline-row-name', def ? def.name : 'סניף ' + entry.worldId));
+    const nameEl = el('span', 'offline-row-name', worldName(def, entry.worldId));
+    row.appendChild(nameEl);
     const amt = el('span', 'offline-row-amount', fmtMoney(entry.amount));
     row.appendChild(amt);
     list.appendChild(row);
-    rows.push({ entry, amt });
+    rows.push({ entry, amt, nameEl, def });
   }
   content.appendChild(list);
 
   const actions = el('div', 'offline-actions');
 
-  const adBtn = el('button', 'success', '🎬 הכפל ×' + CONFIG.offline.adMultiplier);
+  const adBtn = el('button', 'success', t('offline.double', { mult: CONFIG.offline.adMultiplier }));
   adBtn.type = 'button';
 
-  const okBtn = el('button', 'secondary', 'אסוף');
+  const okBtn = el('button', 'secondary', t('offline.collect'));
   okBtn.type = 'button';
 
   const redraw = () => {
@@ -968,9 +1192,25 @@ function showOfflineModal(report) {
     }
   };
 
+  /** Re-apply every string in this modal for the active locale. */
+  const relocalize = () => {
+    modal.setAttribute('dir', localeDir());
+    titleEl.textContent = t('offline.title');
+    awayEl.textContent = t('offline.away', { time: fmtTime(report.seconds) });
+    close.title = t('common.close');
+    close.setAttribute('aria-label', t('common.close'));
+    adBtn.textContent = t('offline.double', { mult: CONFIG.offline.adMultiplier });
+    okBtn.textContent = t('offline.collect');
+    for (let i = 0; i < rows.length; i++) {
+      rows[i].nameEl.textContent = worldName(rows[i].def, rows[i].entry.worldId);
+    }
+    redraw();
+  };
+
   const dismiss = () => {
     if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
     bus.off('money:changed', redraw);
+    if (offlineModalRelocalize === relocalize) offlineModalRelocalize = null;
     offlineModalOpen = false;
   };
 
@@ -1002,6 +1242,7 @@ function showOfflineModal(report) {
   backdrop.appendChild(modal);
   host.appendChild(backdrop);
   offlineModalOpen = true;
+  offlineModalRelocalize = relocalize;
 
   bus.on('money:changed', redraw);
 }
@@ -1144,7 +1385,7 @@ function creditAwayTime() {
   if (away >= TUNING.resumeModalSeconds && !offlineModalOpen) {
     showOfflineModal(report);
   } else {
-    safe(() => toast('הרווחת ' + fmtMoney(report.total) + ' בזמן שלא היית', 'good'), 'toast');
+    safe(() => toast(t('offline.toast', { amount: fmtMoney(report.total) }), 'good'), 'toast');
   }
   refreshUI();
 }
@@ -1277,6 +1518,14 @@ function applyViewportChange() {
  * ------------------------------------------------------------------ */
 
 function boot() {
+  // FIRST: the language must be settled (and <html lang/dir> stamped) before a
+  // single UI module is mounted, so the very first render is already correct.
+  // Idempotent — the module-level prelude above normally got here first.
+  safe(() => initLocale(), 'initLocale');
+  safe(() => ensureTrailingSlash(), 'ensureTrailingSlash');
+  applyDocumentTitle();
+  applyManifestLink();
+
   canvas = byId('game');
   if (canvas) {
     renderer = new Renderer(canvas);
@@ -1324,6 +1573,11 @@ function boot() {
   });
   bus.on('ui:refresh', () => {
     refreshUI();
+  });
+
+  // Language switch: re-label everything on screen. Never a reload.
+  onLocaleChanged(() => {
+    applyLocaleToUI();
   });
 
   bus.on('camera:zoom', (payload) => {

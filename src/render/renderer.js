@@ -28,6 +28,7 @@
  */
 
 import { CONFIG, VENUES, STATIONS, tierDef } from '../core/config.js';
+import { t, dir } from '../core/i18n.js';
 
 /* ------------------------------------------------------------------ *
  *  Small math helpers
@@ -3011,8 +3012,8 @@ export class Renderer {
     g.font = '700 18px ' + FONT_STACK;
     g.textAlign = 'center';
     g.textBaseline = 'middle';
-    g.direction = 'rtl';
-    g.fillText('טוען קזינו…', this.cssW / 2, this.cssH / 2);
+    g.direction = dir();
+    g.fillText(t('app.loading'), this.cssW / 2, this.cssH / 2);
     g.direction = 'ltr';
     g.textAlign = 'start';
     g.textBaseline = 'alphabetic';
@@ -3305,13 +3306,24 @@ export class Renderer {
     g.font = '800 12px ' + FONT_STACK;
     g.textAlign = 'center';
     g.textBaseline = 'middle';
-    g.direction = 'rtl';
+    g.direction = dir();
     for (let i = 0; i < actors.length; i++) {
       const a = actors[i];
       if (!a) continue;
       const type = typeof a.type === 'string' ? a.type : 'thief';
       const def = (CONFIG.liveEvents.types && CONFIG.liveEvents.types[type]) || null;
-      const label = typeof a.label === 'string' && a.label ? a.label : def && def.label ? def.label : '';
+      // Labels are locale keys (config.js carries labelKey, liveEvents.js stamps
+      // a.labelKey per actor/variant) so they follow a mid-session language
+      // switch. a.label is only a legacy escape hatch for a pre-i18n save.
+      const labelKey =
+        (typeof a.labelKey === 'string' && a.labelKey) ||
+        (def && typeof def.labelKey === 'string' && def.labelKey) ||
+        '';
+      const label = labelKey
+        ? t(labelKey)
+        : typeof a.label === 'string' && a.label
+          ? a.label
+          : '';
       if (!label) continue;
       const col = def && def.color ? def.color : '#e67e22';
       const p = this.worldToScreen(Number(a.x) || 0, Number(a.y) || 0, 0);

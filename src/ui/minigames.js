@@ -19,6 +19,7 @@ import { bus, toast } from '../core/events.js';
 import { state, activeWorld, save } from '../core/state.js';
 import { CONFIG } from '../core/config.js';
 import { addMoney, addDiamonds, incomeRate, fmtMoney, fmtTime } from '../core/economy.js';
+import { t, onLocaleChanged } from '../core/i18n.js';
 
 /* ------------------------------------------------------------------ *
  *  Shared module state
@@ -91,9 +92,9 @@ function numberDozen(n) {
   return n === 0 ? 0 : Math.ceil(n / 12);
 }
 function colorLabel(c) {
-  if (c === 'red') return 'אדום';
-  if (c === 'black') return 'שחור';
-  return 'ירוק';
+  if (c === 'red') return t('mini.roulette.color.red');
+  if (c === 'black') return t('mini.roulette.color.black');
+  return t('mini.roulette.color.green');
 }
 
 let rl = null; // transient roulette round state, rebuilt each modal open
@@ -102,6 +103,33 @@ let rlBody = null;
 let rlCanvas = null;
 let rlCooldownTimer = null;
 let rlRaf = null; // in-flight requestAnimationFrame handle for the spin animation
+let rlTitleEl = null;
+
+/**
+ * Reward rebalance (see report): the flat income-boost reward used to pay
+ * ~2x the expected value of the cash reward for the same win, because
+ * boostSeconds was a single constant regardless of which bet's payout
+ * multiplier actually won. The boost's duration is scaled so its EV tracks
+ * the *actual* cash payout (`cashPayout`), not an assumption about what the
+ * bet amount would have been before clamping to [betMin, betMax]. Derivation:
+ *   cashEV   = cashPayout            (already amount * def.payout, clamped)
+ *   boostEV  = incomeRate * (boostMult - 1) * seconds
+ *   solve boostEV = cashEV for `seconds`:
+ *     seconds = cashPayout / (incomeRate * (boostMult - 1))
+ * When incomeRate is ~0 the boost has no EV at any duration (there's no
+ * income to multiply), so fall back to the base bet window as a neutral,
+ * cash-favoring duration rather than dividing by ~0.
+ */
+function boostSecondsForPayout(cashPayout, rate) {
+  const cfg = CONFIG.minigames.roulette;
+  const denom = Math.max(0.01, (Number(cfg.boostMult) || 1) - 1);
+  const incomeRateNum = Number(rate) || 0;
+  if (incomeRateNum <= 0) {
+    return Math.max(15, Math.round(Number(cfg.betSeconds) || 0));
+  }
+  const seconds = (Number(cashPayout) || 0) / (incomeRateNum * denom);
+  return Math.max(15, Math.round(seconds));
+}
 
 function computeRouletteBet() {
   const cfg = CONFIG.minigames.roulette;
@@ -211,13 +239,14 @@ function closeRoulette() {
   rlBackdrop = null;
   rlBody = null;
   rlCanvas = null;
+  rlTitleEl = null;
   rl = null;
 }
 
 function renderRouletteCooldown() {
   if (!rlBody) return;
   rlBody.innerHTML = '';
-  const msg = el('div', null, 'המשחק יהיה זמין שוב בעוד:');
+  const msg = el('div', null, t('mini.cooldown'));
   msg.style.color = 'var(--text-muted)';
   msg.style.marginBottom = '8px';
   const timer = el('div', 'card-title', fmtTime(Math.ceil(remainingCooldownMs('roulette') / 1000)));
@@ -246,7 +275,7 @@ function renderRouletteGame() {
   }
   rlBody.innerHTML = '';
 
-  rl = { betKey: null, betParam: null, amount: computeRouletteBet(), spinning: false };
+  rl = { betKey: null, betParam: null, amount: computeRouletteBet(), spinning: false, claimed: false, lastOutcome: null, lastResultBox: null, lastWorld: null };
 
   const wheelWrap = el('div', null);
   wheelWrap.style.display = 'flex';
@@ -262,7 +291,7 @@ function renderRouletteGame() {
   rlBody.appendChild(wheelWrap);
   rlCanvas = canvas;
 
-  const betLine = el('div', null, 'הימור קבוע: ' + fmtMoney(rl.amount));
+  const betLine = el('div', null, t('mini.roulette.betAmount', { amount: fmtMoney(rl.amount) }));
   betLine.style.textAlign = 'center';
   betLine.style.color = 'var(--gold)';
   betLine.style.margin = '8px 0';
@@ -277,7 +306,7 @@ function renderRouletteGame() {
 
   const spinBtn = document.createElement('button');
   spinBtn.type = 'button';
-  spinBtn.textContent = 'סובב';
+  spinBtn.textContent = t('mini.roulette.spin');
   spinBtn.disabled = true;
 
   function refreshSpinEnabled() {
@@ -292,7 +321,7 @@ function renderRouletteGame() {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'shop-item';
-    btn.textContent = def.name + ' (x' + def.payout + ')';
+    btn.textContent = t('mini.roulette.bet.' + def.key) + ' (x' + def.payout + ')';
     btn.addEventListener('click', () => {
       rl.betKey = def.key;
       rl.betParam = null;
@@ -302,7 +331,7 @@ function renderRouletteGame() {
           const sub = document.createElement('button');
           sub.type = 'button';
           sub.className = 'shop-item';
-          sub.textContent = (d === 1 ? '1-12' : d === 2 ? '13-24' : '25-36');
+          sub.textContent = t('mini.roulette.dozen.' + d);
           sub.addEventListener('click', () => {
             rl.betParam = d;
             refreshSpinEnabled();
@@ -315,7 +344,7 @@ function renderRouletteGame() {
         select.style.padding = '6px';
         const placeholder = document.createElement('option');
         placeholder.value = '';
-        placeholder.textContent = '— בחר מספר —';
+        placeholder.textContent = t('mini.roulette.pickNumber');
         select.appendChild(placeholder);
         for (let n = 0; n <= 36; n++) {
           const opt = document.createElement('option');
@@ -342,20 +371,20 @@ function renderRouletteGame() {
   spinBtn.addEventListener('click', () => {
     if (rl.spinning) return;
     if (!rl.betKey) {
-      toast('בחר סוג הימור', 'bad');
+      toast(t('mini.roulette.needBet'), 'bad');
       return;
     }
     if (rl.betKey === 'dozen' && !rl.betParam) {
-      toast('בחר תריסר', 'bad');
+      toast(t('mini.roulette.needDozen'), 'bad');
       return;
     }
     if (rl.betKey === 'single' && (rl.betParam === null || rl.betParam === undefined)) {
-      toast('בחר מספר', 'bad');
+      toast(t('mini.roulette.needNumber'), 'bad');
       return;
     }
     const w = activeWorld();
     if (!w || (Number(w.money) || 0) < rl.amount) {
-      toast('אין מספיק כסף להימור', 'bad');
+      toast(t('mini.roulette.noMoney'), 'bad');
       return;
     }
     const def = bets.find((b) => b.key === rl.betKey);
@@ -377,6 +406,9 @@ function renderRouletteGame() {
     // stale callback can't write into detached/reused DOM.
     const round = rl;
     const outcome = settleRouletteBet(winNumber, def, round.betParam, round.amount);
+    round.lastOutcome = outcome;
+    round.lastResultBox = resultBox;
+    round.lastWorld = w;
 
     animateSpin(ctx, 220, targetIdx, 3600, () => {
       if (rl !== round) return; // modal closed or a new round started meanwhile
@@ -401,24 +433,25 @@ function settleRouletteBet(winNumber, def, betParam, amount) {
   const cfg = CONFIG.minigames.roulette;
   if (def.key === 'single' && win) {
     addDiamonds(cfg.diamondsOnStraight);
-    toast('פגיעה במספר בודד! +' + cfg.diamondsOnStraight + ' יהלומים', 'good');
+    toast(t('mini.roulette.straight', { amount: cfg.diamondsOnStraight }), 'good');
   }
 
   const payout = win ? Math.floor(amount * def.payout) : 0;
-  return { winNumber, color, win, payout };
+  return { winNumber, color, win, payout, payoutMult: def.payout };
 }
 
 function renderRouletteOutcome(outcome, resultBox, w) {
   resultBox.innerHTML = '';
-  const headline = el('div', 'card-title', 'יצא ' + outcome.winNumber + ' (' + colorLabel(outcome.color) + ')');
+  const headline = el('div', 'card-title', t('mini.roulette.result', { number: outcome.winNumber, color: colorLabel(outcome.color) }));
   headline.style.fontSize = '16px';
   resultBox.appendChild(headline);
 
   const cfg = CONFIG.minigames.roulette;
+  const alreadyClaimed = !!(rl && rl.claimed);
 
   if (outcome.win) {
     const payout = outcome.payout;
-    const line = el('div', null, 'ניצחת! זכייה אפשרית: ' + fmtMoney(payout));
+    const line = el('div', null, t('mini.roulette.win', { amount: fmtMoney(payout) }));
     line.style.color = 'var(--good)';
     line.style.margin = '6px 0';
     resultBox.appendChild(line);
@@ -431,23 +464,39 @@ function renderRouletteOutcome(outcome, resultBox, w) {
     const cashBtn = document.createElement('button');
     cashBtn.type = 'button';
     cashBtn.className = 'success';
-    cashBtn.textContent = 'קח מזומן';
+    cashBtn.textContent = t('mini.roulette.takeCash');
+    cashBtn.disabled = alreadyClaimed;
     cashBtn.addEventListener('click', () => {
       addMoney(w, payout);
-      toast('קיבלת ' + fmtMoney(payout), 'good');
+      toast(t('mini.roulette.gotCash', { amount: fmtMoney(payout) }), 'good');
+      if (rl) rl.claimed = true;
       cashBtn.disabled = true;
       boostBtn.disabled = true;
     });
 
+    // Boost duration is scaled to the actual (possibly betMin/betMax-clamped)
+    // cash payout, not the payout multiplier alone (see boostSecondsForPayout
+    // doc-comment), so its expected value tracks the cash option instead of
+    // paying out ~2x -- or ~0x for low-income casinos -- for the same win.
+    let boostRate = 0;
+    try {
+      boostRate = incomeRate(w);
+    } catch (err) {
+      boostRate = 0;
+    }
+    const boostSeconds = boostSecondsForPayout(payout, boostRate);
     const boostBtn = document.createElement('button');
     boostBtn.type = 'button';
     boostBtn.className = 'secondary';
-    boostBtn.textContent = 'קח בוסט הכנסה ×' + cfg.boostMult;
+    boostBtn.textContent = t('mini.roulette.takeBoost', { mult: cfg.boostMult });
+    boostBtn.disabled = alreadyClaimed;
     boostBtn.addEventListener('click', () => {
-      state.boosts.income = { mult: cfg.boostMult, until: Date.now() + cfg.boostSeconds * 1000 };
-      bus.emit('boost:started', { kind: 'income', mult: cfg.boostMult, seconds: cfg.boostSeconds });
+      const seconds = boostSeconds;
+      state.boosts.income = { mult: cfg.boostMult, until: Date.now() + seconds * 1000 };
+      bus.emit('boost:started', { kind: 'income', mult: cfg.boostMult, seconds });
       save();
-      toast('בוסט הכנסה פעיל!', 'good');
+      toast(t('mini.roulette.boostOn'), 'good');
+      if (rl) rl.claimed = true;
       cashBtn.disabled = true;
       boostBtn.disabled = true;
     });
@@ -456,7 +505,7 @@ function renderRouletteOutcome(outcome, resultBox, w) {
     choices.appendChild(boostBtn);
     resultBox.appendChild(choices);
   } else {
-    const line = el('div', null, 'הפסדת את ההימור.');
+    const line = el('div', null, t('mini.roulette.lose'));
     line.style.color = 'var(--bad)';
     resultBox.appendChild(line);
   }
@@ -464,7 +513,7 @@ function renderRouletteOutcome(outcome, resultBox, w) {
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
   closeBtn.className = 'secondary';
-  closeBtn.textContent = 'סגור';
+  closeBtn.textContent = t('common.close');
   closeBtn.style.marginTop = '10px';
   closeBtn.addEventListener('click', closeRoulette);
   resultBox.appendChild(closeBtn);
@@ -476,11 +525,14 @@ function showRoulette() {
 
   const backdrop = el('div', 'modal-backdrop');
   const modal = el('div', 'modal');
-  const title = el('div', 'modal-title', 'רולטה — High Roller');
+  const title = el('div', 'modal-title', t('mini.roulette.title'));
   modal.appendChild(title);
+  rlTitleEl = title;
 
   const closeBtn = el('button', 'modal-close', '×');
   closeBtn.type = 'button';
+  closeBtn.title = t('common.close');
+  closeBtn.setAttribute('aria-label', t('common.close'));
   closeBtn.addEventListener('click', closeRoulette);
   modal.appendChild(closeBtn);
 
@@ -557,6 +609,7 @@ let bj = null;
 let bjBackdrop = null;
 let bjBody = null;
 let bjCooldownTimer = null;
+let bjTitleEl = null;
 
 function drawCard() {
   if (!bj.shoe.length) bj.shoe = buildShoe(CONFIG.minigames.blackjack.decks);
@@ -571,6 +624,7 @@ function closeBlackjack() {
   if (bjBackdrop && bjBackdrop.parentNode) bjBackdrop.parentNode.removeChild(bjBackdrop);
   bjBackdrop = null;
   bjBody = null;
+  bjTitleEl = null;
   bj = null;
 }
 
@@ -601,7 +655,7 @@ function renderCardEl(card, hidden) {
 function renderBlackjackCooldown() {
   if (!bjBody) return;
   bjBody.innerHTML = '';
-  const msg = el('div', null, 'המשחק יהיה זמין שוב בעוד:');
+  const msg = el('div', null, t('mini.cooldown'));
   msg.style.color = 'var(--text-muted)';
   msg.style.marginBottom = '8px';
   const timer = el('div', 'card-title', fmtTime(Math.ceil(remainingCooldownMs('blackjack') / 1000)));
@@ -625,7 +679,7 @@ function renderBlackjackCooldown() {
 function renderBlackjackIntro() {
   if (!bjBody) return;
   bjBody.innerHTML = '';
-  const info = el('div', null, 'יד אחת מול הדילר הראשי. הדילר עוצר על ' + CONFIG.minigames.blackjack.dealerStandsOn + '.');
+  const info = el('div', null, t('mini.blackjack.intro', { value: CONFIG.minigames.blackjack.dealerStandsOn }));
   info.style.color = 'var(--text-muted)';
   info.style.marginBottom = '10px';
   bjBody.appendChild(info);
@@ -633,9 +687,9 @@ function renderBlackjackIntro() {
   const startBtn = document.createElement('button');
   startBtn.type = 'button';
   startBtn.className = 'success';
-  startBtn.textContent = 'התחל יד';
+  startBtn.textContent = t('mini.blackjack.start');
   startBtn.addEventListener('click', () => {
-    bj = { shoe: buildShoe(CONFIG.minigames.blackjack.decks), player: [], dealer: [], phase: 'player', outcome: null };
+    bj = { shoe: buildShoe(CONFIG.minigames.blackjack.decks), player: [], dealer: [], phase: 'player', outcome: null, claimed: false };
     bj.player = [drawCard(), drawCard()];
     bj.dealer = [drawCard(), drawCard()];
 
@@ -656,26 +710,26 @@ function finishBlackjackHand() {
   const cfg = CONFIG.minigames.blackjack;
   if (bj.outcome === 'push') {
     addDiamonds(cfg.diamondsPush);
-    toast('תיקו! קיבלת ' + cfg.diamondsPush + ' יהלומים', 'info');
+    toast(t('mini.blackjack.pushToast', { amount: cfg.diamondsPush }), 'info');
   } else if (bj.outcome === 'dealerBlackjack' || bj.outcome === 'bust' || bj.outcome === 'lose') {
-    toast('הפסדת את היד', 'bad');
+    toast(t('mini.blackjack.loseToast'), 'bad');
   }
 }
 
 function outcomeLabel(outcome) {
-  if (outcome === 'blackjack') return 'בלאק ג׳ק! ניצחון מושלם';
-  if (outcome === 'win') return 'ניצחת!';
-  if (outcome === 'push') return 'תיקו';
-  if (outcome === 'bust') return 'פסטת — הפסד';
-  if (outcome === 'dealerBlackjack') return 'לדילר בלאק ג׳ק — הפסד';
-  return 'הפסדת';
+  if (outcome === 'blackjack') return t('mini.blackjack.blackjack');
+  if (outcome === 'win') return t('mini.blackjack.win');
+  if (outcome === 'push') return t('mini.blackjack.push');
+  if (outcome === 'bust') return t('mini.blackjack.bust');
+  if (outcome === 'dealerBlackjack') return t('mini.blackjack.dealerBlackjack');
+  return t('mini.blackjack.lose');
 }
 
 function renderBlackjackTable() {
   if (!bjBody || !bj) return;
   bjBody.innerHTML = '';
 
-  const dealerLabel = el('div', null, 'דילר' + (bj.phase === 'player' ? '' : ' (' + handValue(bj.dealer) + ')'));
+  const dealerLabel = el('div', null, bj.phase === 'player' ? t('mini.blackjack.dealer') : t('mini.blackjack.dealerScore', { value: handValue(bj.dealer) }));
   dealerLabel.style.color = 'var(--text-muted)';
   dealerLabel.style.fontSize = '12px';
   bjBody.appendChild(dealerLabel);
@@ -688,7 +742,7 @@ function renderBlackjackTable() {
   });
   bjBody.appendChild(dealerRow);
 
-  const playerLabel = el('div', null, 'שחקן (' + handValue(bj.player) + ')');
+  const playerLabel = el('div', null, t('mini.blackjack.player', { value: handValue(bj.player) }));
   playerLabel.style.color = 'var(--text-muted)';
   playerLabel.style.fontSize = '12px';
   bjBody.appendChild(playerLabel);
@@ -706,7 +760,7 @@ function renderBlackjackTable() {
 
     const hitBtn = document.createElement('button');
     hitBtn.type = 'button';
-    hitBtn.textContent = 'משוך (Hit)';
+    hitBtn.textContent = t('mini.blackjack.hit');
     hitBtn.addEventListener('click', () => {
       bj.player.push(drawCard());
       if (handValue(bj.player) > 21) {
@@ -720,7 +774,7 @@ function renderBlackjackTable() {
     const standBtn = document.createElement('button');
     standBtn.type = 'button';
     standBtn.className = 'secondary';
-    standBtn.textContent = 'עצור (Stand)';
+    standBtn.textContent = t('mini.blackjack.stand');
     standBtn.addEventListener('click', () => {
       bj.phase = 'dealer';
       while (handValue(bj.dealer) < CONFIG.minigames.blackjack.dealerStandsOn) {
@@ -757,14 +811,17 @@ function renderBlackjackTable() {
     choices.style.flexWrap = 'wrap';
 
     const diamondAmt = bj.outcome === 'blackjack' ? cfg.diamondsBlackjack : cfg.diamondsWin;
+    const alreadyClaimed = !!bj.claimed;
 
     const diamondBtn = document.createElement('button');
     diamondBtn.type = 'button';
     diamondBtn.className = 'success';
-    diamondBtn.textContent = 'קח ' + diamondAmt + ' 💎';
+    diamondBtn.textContent = t('mini.blackjack.takeDiamonds', { amount: diamondAmt });
+    diamondBtn.disabled = alreadyClaimed;
     diamondBtn.addEventListener('click', () => {
       addDiamonds(diamondAmt);
-      toast('קיבלת ' + diamondAmt + ' יהלומים', 'good');
+      toast(t('mini.blackjack.gotDiamonds', { amount: diamondAmt }), 'good');
+      bj.claimed = true;
       diamondBtn.disabled = true;
       dealerBtn.disabled = true;
       cashBtn.disabled = true;
@@ -773,12 +830,14 @@ function renderBlackjackTable() {
     const dealerBtn = document.createElement('button');
     dealerBtn.type = 'button';
     dealerBtn.className = 'secondary';
-    dealerBtn.textContent = 'בוסט לדילרים ×' + cfg.dealerBoostMult;
+    dealerBtn.textContent = t('mini.blackjack.takeDealerBoost', { mult: cfg.dealerBoostMult });
+    dealerBtn.disabled = alreadyClaimed;
     dealerBtn.addEventListener('click', () => {
       state.boosts.dealer = { mult: cfg.dealerBoostMult, until: Date.now() + cfg.dealerBoostSeconds * 1000 };
       bus.emit('boost:started', { kind: 'dealer', mult: cfg.dealerBoostMult, seconds: cfg.dealerBoostSeconds });
       save();
-      toast('בוסט לדילרים פעיל!', 'good');
+      toast(t('mini.blackjack.dealerBoostOn'), 'good');
+      bj.claimed = true;
       diamondBtn.disabled = true;
       dealerBtn.disabled = true;
       cashBtn.disabled = true;
@@ -786,7 +845,8 @@ function renderBlackjackTable() {
 
     const cashBtn = document.createElement('button');
     cashBtn.type = 'button';
-    cashBtn.textContent = 'קח מזומן';
+    cashBtn.textContent = t('mini.blackjack.takeCash');
+    cashBtn.disabled = alreadyClaimed;
     cashBtn.addEventListener('click', () => {
       const w = activeWorld();
       let rate = 0;
@@ -797,7 +857,8 @@ function renderBlackjackTable() {
       }
       const amt = Math.max(cfg.cashWinMin, Math.floor((Number(rate) || 0) * cfg.cashWinSeconds));
       if (w) addMoney(w, amt);
-      toast('קיבלת ' + fmtMoney(amt), 'good');
+      toast(t('mini.blackjack.gotCash', { amount: fmtMoney(amt) }), 'good');
+      bj.claimed = true;
       diamondBtn.disabled = true;
       dealerBtn.disabled = true;
       cashBtn.disabled = true;
@@ -812,7 +873,7 @@ function renderBlackjackTable() {
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
   closeBtn.className = 'secondary';
-  closeBtn.textContent = 'סגור';
+  closeBtn.textContent = t('common.close');
   closeBtn.style.marginTop = '10px';
   closeBtn.style.display = 'block';
   closeBtn.style.marginLeft = 'auto';
@@ -827,11 +888,14 @@ function showBlackjack() {
 
   const backdrop = el('div', 'modal-backdrop');
   const modal = el('div', 'modal');
-  const title = el('div', 'modal-title', 'בלאק ג׳ק — Dealer Challenge');
+  const title = el('div', 'modal-title', t('mini.blackjack.title'));
   modal.appendChild(title);
+  bjTitleEl = title;
 
   const closeBtn = el('button', 'modal-close', '×');
   closeBtn.type = 'button';
+  closeBtn.title = t('common.close');
+  closeBtn.setAttribute('aria-label', t('common.close'));
   closeBtn.addEventListener('click', closeBlackjack);
   modal.appendChild(closeBtn);
 
@@ -856,6 +920,40 @@ function showBlackjack() {
  *  Public API
  * ------------------------------------------------------------------ */
 
+/**
+ * Re-render whichever mini-game modal is currently open so every visible
+ * string picks up the new language immediately. Both games are driven
+ * entirely off their transient `rl`/`bj` state objects (including the
+ * `claimed` flag added specifically for this), so calling their render
+ * functions again is always safe: it never re-enables an already-claimed
+ * reward and never drops an in-flight spin/animation.
+ */
+function retranslateRoulette() {
+  if (!rlBackdrop) return;
+  if (rlTitleEl) rlTitleEl.textContent = t('mini.roulette.title');
+  if (isOnCooldown('roulette')) {
+    renderRouletteCooldown();
+    return;
+  }
+  if (rl && rl.spinning) return; // mid-animation; the spin-end callback renders fresh text anyway
+  if (rl && rl.lastOutcome) {
+    renderRouletteOutcome(rl.lastOutcome, rl.lastResultBox, rl.lastWorld);
+    return;
+  }
+  if (rl) renderRouletteGame();
+}
+
+function retranslateBlackjack() {
+  if (!bjBackdrop) return;
+  if (bjTitleEl) bjTitleEl.textContent = t('mini.blackjack.title');
+  if (isOnCooldown('blackjack')) {
+    renderBlackjackCooldown();
+    return;
+  }
+  if (bj) renderBlackjackTable();
+  else renderBlackjackIntro();
+}
+
 export function mount(mountRoot) {
   root = mountRoot || null;
   ensureModalContainer();
@@ -864,6 +962,11 @@ export function mount(mountRoot) {
   // importing openRoulette()/openBlackjack() directly.
   bus.on('ui:openRoulette', openRoulette);
   bus.on('ui:openBlackjack', openBlackjack);
+
+  onLocaleChanged(() => {
+    retranslateRoulette();
+    retranslateBlackjack();
+  });
 }
 
 export function update() {

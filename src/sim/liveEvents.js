@@ -23,6 +23,7 @@ import { CONFIG, VENUES, STAFF } from '../core/config.js';
 import { bus, toast } from '../core/events.js';
 import { state } from '../core/state.js';
 import { incomeRate, addMoney, fmtMoney } from '../core/economy.js';
+import { t } from '../core/i18n.js';
 
 /* ------------------------------------------------------------------ *
  *  Config shortcuts + local derived pacing constants
@@ -74,34 +75,43 @@ const TUNING = {
   minVenues: 1
 };
 
-/** Hebrew UI strings for this module. */
+/**
+ * Toast strings for this module.
+ *
+ * Every entry is a FUNCTION so the lookup happens at the moment the toast is
+ * produced, not at module-evaluation time — that is what lets a mid-session
+ * language switch take effect without a reload. The interpolation the old
+ * hard-coded Hebrew table did by string concatenation ('… +' + m) is now the
+ * {amount} / {mult} / {seconds} placeholders in he.js / en.js, so the rendered
+ * text is byte-identical in Hebrew. No simulation behaviour depends on these.
+ */
 const TEXT = {
-  thiefSpawn: 'גנב חוטף שק מזומנים!',
-  thiefPlayer: (m) => 'תפסת את הגנב! +' + m,
-  thiefStaff: (m) => 'המאבטחים תפסו את הגנב! +' + m,
-  thiefEscape: (m) => 'הגנב ברח עם ' + m,
-  flagged: 'המצלמות זיהו פעילות חשודה!',
+  thiefSpawn: () => t('event.thief.spawn'),
+  thiefPlayer: (m) => t('event.thief.player', { amount: m }),
+  thiefStaff: (m) => t('event.thief.staff', { amount: m }),
+  thiefEscape: (m) => t('event.thief.escape', { amount: m }),
+  flagged: () => t('event.flagged'),
 
-  brinksSpawn: 'ברינקס הגיע לאסוף את הקופה.',
-  brinksDone: (m) => 'הקופה הועברה בבטחה. +' + m,
-  brinksEscort: (m) => 'ליווית את הסבלים עד היציאה! +' + m,
-  brinksRobbed: (m) => 'שוד! הברינקס נשדד ונלקחו ' + m,
-  robberSpawn: 'שודד מנסה לחטוף את המשלוח!',
-  robberStopped: (m) => 'השוד סוכל! +' + m,
+  brinksSpawn: () => t('event.brinks.spawn'),
+  brinksDone: (m) => t('event.brinks.done', { amount: m }),
+  brinksEscort: (m) => t('event.brinks.escort', { amount: m }),
+  brinksRobbed: (m) => t('event.brinks.robbed', { amount: m }),
+  robberSpawn: () => t('event.robber.spawn'),
+  robberStopped: (m) => t('event.robber.stopped', { amount: m }),
 
-  counterSpawn: 'חשד לספירת קלפים באחד השולחנות...',
-  counterPlayer: (m) => 'סילקת את סופר הקלפים! +' + m,
-  counterStaff: (m) => 'האבטחה סילקה את סופר הקלפים. +' + m,
-  counterEscape: (m) => 'סופר הקלפים התחמק עם ' + m,
+  counterSpawn: () => t('event.counter.spawn'),
+  counterPlayer: (m) => t('event.counter.player', { amount: m }),
+  counterStaff: (m) => t('event.counter.staff', { amount: m }),
+  counterEscape: (m) => t('event.counter.escape', { amount: m }),
 
-  angrySpawn: 'לקוח זועם עושה סצנה!',
-  angryPlayer: (m) => 'הרגעת את הלקוח הזועם. +' + m,
-  angryStaff: (m) => 'האבטחה הרגיעה את הלקוח הזועם. +' + m,
-  angryEscape: (m) => 'הלקוח הזועם הרס את האווירה. -' + m,
+  angrySpawn: () => t('event.angry.spawn'),
+  angryPlayer: (m) => t('event.angry.player', { amount: m }),
+  angryStaff: (m) => t('event.angry.staff', { amount: m }),
+  angryEscape: (m) => t('event.angry.escape', { amount: m }),
 
-  vipSpawn: 'סלבריטי הגיע לקזינו!',
-  vipEscort: (m, x, s) => 'ליווית את ה-VIP! ×' + x + ' הכנסה ל-' + s + ' שניות. +' + m,
-  vipLeft: 'ה-VIP עזב בלי שקיבל יחס.'
+  vipSpawn: () => t('event.vip.spawn'),
+  vipEscort: (m, x, s) => t('event.vip.escort', { amount: m, mult: x, seconds: s }),
+  vipLeft: () => t('event.vip.left')
 };
 
 /* ------------------------------------------------------------------ *
@@ -552,6 +562,10 @@ export class LiveEventSim {
     const a = {
       id: NEXT_ID++,
       type,
+      // The renderer translates labelKey at draw time, so an actor already on
+      // screen relabels itself when the language changes. config.js carries
+      // labelKey for every type; `type` is only a last-resort identifier.
+      labelKey: typeof def.labelKey === 'string' ? def.labelKey : '',
       label: typeof def.label === 'string' ? def.label : type,
       color: typeof def.color === 'string' ? def.color : '#ffffff',
       x: p.x,
@@ -590,12 +604,13 @@ export class LiveEventSim {
     a.carrying = true;
     if (convoy) {
       a.variant = 'robber';
-      a.label = 'שודד';
+      a.labelKey = 'event.robber.label';
+      a.label = '';
       a.chase = convoy.id;
-      a.spawnText = TEXT.robberSpawn;
+      a.spawnText = TEXT.robberSpawn();
       a.spawnKind = 'bad';
     } else {
-      a.spawnText = TEXT.thiefSpawn;
+      a.spawnText = TEXT.thiefSpawn();
       a.spawnKind = 'bad';
     }
     return a;
@@ -607,7 +622,7 @@ export class LiveEventSim {
     const entrance = this._entrancePoint();
     a.tx = entrance.x;
     a.ty = entrance.y;
-    a.spawnText = TEXT.brinksSpawn;
+    a.spawnText = TEXT.brinksSpawn();
     a.spawnKind = 'info';
 
     const guards = this._guardStats();
@@ -633,7 +648,7 @@ export class LiveEventSim {
     const a = this._makeActor('counter', def, table);
     a.speed = 0;
     a.tableKey = table.key || '';
-    a.spawnText = TEXT.counterSpawn;
+    a.spawnText = TEXT.counterSpawn();
     a.spawnKind = 'info';
     return a;
   }
@@ -643,7 +658,7 @@ export class LiveEventSim {
     const a = this._makeActor('angry', def, spot);
     a.ax = spot.x;
     a.ay = spot.y;
-    a.spawnText = TEXT.angrySpawn;
+    a.spawnText = TEXT.angrySpawn();
     a.spawnKind = 'bad';
     return a;
   }
@@ -654,7 +669,7 @@ export class LiveEventSim {
     const dest = this._vipDestination();
     a.tx = dest.x;
     a.ty = dest.y;
-    a.spawnText = TEXT.vipSpawn;
+    a.spawnText = TEXT.vipSpawn();
     a.spawnKind = 'good';
     return a;
   }
@@ -818,7 +833,7 @@ export class LiveEventSim {
         c.count;
       if (Math.random() < perSecond * dt) {
         a.flagged = true;
-        if (a.type !== 'angry') toast(TEXT.flagged, 'info');
+        if (a.type !== 'angry') toast(TEXT.flagged(), 'info');
       }
     }
 
@@ -857,7 +872,7 @@ export class LiveEventSim {
     const def = TYPE_DEFS[a.type] || {};
 
     if (a.type === 'vip') {
-      this._finish(a, false, 0, TEXT.vipLeft, 'info');
+      this._finish(a, false, 0, TEXT.vipLeft(), 'info');
       return;
     }
 

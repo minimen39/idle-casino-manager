@@ -35,7 +35,7 @@
  * ------------------------------------------------------------------ */
 
 /** Bump VERSION on every deploy to invalidate the whole precache. */
-var VERSION = 'v2';
+var VERSION = 'v4';
 var CACHE_PREFIX = 'idle-casino-';
 var CACHE_NAME = CACHE_PREFIX + VERSION;
 
@@ -58,7 +58,7 @@ var SCOPE_PATH = new URL('./', self.location.href).pathname;
  * listed because they are distinct cache keys even though the server returns
  * the same bytes for each — start_url is './', so './' must be a cache hit.
  *
- * All 16 ES modules are enumerated explicitly; the SW cannot walk the import
+ * All 19 ES modules are enumerated explicitly; the SW cannot walk the import
  * graph, and a module that is missing from the cache would make the game fail
  * to boot offline with a module-resolution error.
  */
@@ -72,7 +72,11 @@ var CORE_ASSETS = [
   './src/core/config.js',
   './src/core/economy.js',
   './src/core/events.js',
+  './src/core/i18n.js',
   './src/core/state.js',
+
+  './src/core/locales/en.js',
+  './src/core/locales/he.js',
 
   './src/render/renderer.js',
 
@@ -92,12 +96,17 @@ var CORE_ASSETS = [
 /*
  * OPTIONAL_ASSETS: nice-to-have. These are fetched individually and a failure is
  * swallowed, so a not-yet-deployed icon can never reject install(). The icon
- * list below mirrors index.html + manifest.webmanifest; on top of it, install
- * parses the live manifest and precaches whatever icons it actually declares,
- * so this list staying in sync is not load-bearing.
+ * list below mirrors index.html + the manifests; on top of it, install parses
+ * the live manifest and precaches whatever icons it actually declares, so this
+ * list staying in sync is not load-bearing. All three manifests declare the
+ * same icons, so parsing the default one covers the per-locale copies too.
  */
 var OPTIONAL_ASSETS = [
   './manifest.webmanifest',
+  // main.js swaps <link rel="manifest"> to the per-locale file at boot, so both
+  // have to be cached or an offline install prompt reads a 504.
+  './manifest.he.webmanifest',
+  './manifest.en.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-512-maskable.png',
@@ -228,7 +237,14 @@ function absolutize(list) {
 
 function precacheAll() {
   return openCache().then(function (cache) {
-    if (!cache) return;
+    // If caches.open() itself failed, there is nothing to precache into and
+    // no shell guard for offline use. Silently resolving here would let
+    // install() succeed and the browser activate a worker whose cache is
+    // completely empty — "installed" but useless offline. Reject instead so
+    // the browser discards this worker and retries install() later.
+    if (!cache) {
+      throw new Error('[sw] precache aborted: caches.open() failed');
+    }
 
     // Every url is precached EXACTLY ONCE. The manifest's icons overlap with
     // OPTIONAL_ASSETS, and issuing two concurrent cache.put() calls for the
@@ -327,13 +343,26 @@ self.addEventListener('activate', function (event) {
  * viewport even though a good copy of index.html is sitting in the cache. */
 var NAVIGATE_TIMEOUT_MS = 2500;
 
+/*
+ * Last-resort offline page: shown only when even the cached index.html is
+ * gone. It is deliberately BILINGUAL rather than localized. A service worker
+ * is a classic worker with no ES-module import of src/core/locales/*.js and
+ * no access to localStorage, so it cannot know which language the player
+ * picked; guessing wrong on the one screen that explains what went wrong is
+ * worse than showing both lines. Each line carries its own lang/dir so the
+ * Hebrew renders RTL and the English LTR inside the same document.
+ */
 function offlineFallbackPage() {
   return new Response(
-    '<!DOCTYPE html><html lang="he" dir="rtl"><meta charset="utf-8">' +
-      '<title>לא זמין</title>' +
+    '<!DOCTYPE html><html><meta charset="utf-8">' +
+      '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+      '<title>Offline — לא זמין</title>' +
       '<body style="background:#150c26;color:#f4ecff;font-family:system-ui,sans-serif;' +
-      'display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center">' +
-      '<p>המשחק אינו זמין במצב לא מקוון.<br>התחברו לרשת ונסו שוב.</p></body></html>',
+      'display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;' +
+      'height:100vh;margin:0;text-align:center;padding:16px;box-sizing:border-box">' +
+      '<p lang="he" dir="rtl" style="margin:0">המשחק אינו זמין במצב לא מקוון.<br>התחברו לרשת ונסו שוב.</p>' +
+      '<p lang="en" dir="ltr" style="margin:0">The game is unavailable offline.<br>Reconnect and try again.</p>' +
+      '</body></html>',
     {
       status: 200,
       headers: { 'Content-Type': 'text/html; charset=utf-8' }

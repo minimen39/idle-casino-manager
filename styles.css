@@ -109,7 +109,7 @@ body {
 #game {
   position: absolute;
   top: 0;
-  left: 0;
+  inset-inline-start: 0;
   width: 100%;
   /*
    * Reserve the strip the build drawer (.panels, max-height: 40vh) occupies
@@ -144,7 +144,7 @@ body {
 #ui-layer {
   position: absolute;
   top: 0;
-  left: 0;
+  inset-inline-start: 0;
   width: 100%;
   height: 100%;
   pointer-events: none;
@@ -161,8 +161,8 @@ body {
 .hud {
   position: absolute;
   top: 0;
-  left: 0;
-  right: 0;
+  inset-inline-start: 0;
+  inset-inline-end: 0;
   /* The extra safe-top room is added to the box height (not just its
    * padding) so the punch-hole camera never overlaps the money readout —
    * padding alone would just shrink the content area inside a fixed 60px. */
@@ -173,7 +173,6 @@ body {
   border-bottom: 4px solid var(--accent);
   box-shadow: var(--shadow-md);
   display: flex;
-  flex-direction: row-reverse;
   align-items: center;
   gap: var(--spacing-lg);
   font-weight: 500;
@@ -214,8 +213,8 @@ body {
 .panels {
   position: absolute;
   bottom: 0;
-  left: 0;
-  right: 0;
+  inset-inline-start: 0;
+  inset-inline-end: 0;
   /*
    * Fixed (not max-) height: #game reserves this exact strip (see #game
    * above), so this must always occupy it — a content-fit max-height would
@@ -235,7 +234,6 @@ body {
 
 .panel-tabs {
   display: flex;
-  flex-direction: row-reverse;
   border-bottom: 2px solid var(--panel-alt);
   background: var(--panel);
 }
@@ -409,8 +407,8 @@ button.success:hover:not(:disabled) {
 .modal-backdrop {
   position: fixed;
   top: 0;
-  left: 0;
-  right: 0;
+  inset-inline-start: 0;
+  inset-inline-end: 0;
   bottom: 0;
   background: rgba(10, 4, 20, 0.75);
   display: flex;
@@ -456,7 +454,7 @@ button.success:hover:not(:disabled) {
 .modal-close {
   position: absolute;
   top: var(--spacing-md);
-  right: var(--spacing-md);
+  inset-inline-start: var(--spacing-md);
   background: var(--panel-alt);
   color: var(--text-muted);
   border: 2px solid var(--accent-dark);
@@ -601,11 +599,19 @@ button.success:hover:not(:disabled) {
   color: var(--good);
 }
 
+/* The badge text is language-dependent, and CSS cannot call t(). Rather than
+ * bake one language into the stylesheet, the string is driven off <html lang>,
+ * which i18n.setLocale() keeps current. Hebrew is the default so an unknown /
+ * missing lang still renders the original text rather than nothing. */
 .shop-item.purchased::after {
   content: '✓ רכוש';
   color: var(--good);
   font-weight: 700;
   font-size: 11px;
+}
+
+:root[lang="en"] .shop-item.purchased::after {
+  content: '✓ Owned';
 }
 
 /* ================================================================
@@ -655,7 +661,7 @@ button.success:hover:not(:disabled) {
   padding: var(--spacing-md) var(--spacing-lg);
   background: var(--panel);
   border: 2px solid var(--panel-alt);
-  border-right: 5px solid var(--accent);
+  border-inline-start: 5px solid var(--accent);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   animation: toastSlideUp 0.3s ease;
@@ -675,15 +681,15 @@ button.success:hover:not(:disabled) {
 }
 
 .toast.good {
-  border-right-color: var(--good);
+  border-inline-start-color: var(--good);
 }
 
 .toast.bad {
-  border-right-color: var(--bad);
+  border-inline-start-color: var(--bad);
 }
 
 .toast.info {
-  border-right-color: var(--info);
+  border-inline-start-color: var(--info);
 }
 
 /* ================================================================
@@ -694,7 +700,6 @@ button.success:hover:not(:disabled) {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  flex-direction: row-reverse;
   align-items: center;
   gap: var(--spacing-lg);
   overflow-x: auto;
@@ -771,7 +776,7 @@ button.success:hover:not(:disabled) {
   padding: var(--spacing-sm) var(--spacing-md);
   background: var(--panel);
   border: 2px solid var(--panel-alt);
-  border-right: 5px solid var(--accent);
+  border-inline-start: 5px solid var(--accent);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   animation: toastSlideUp 0.25s ease;
@@ -781,13 +786,82 @@ button.success:hover:not(:disabled) {
   transition: opacity 0.4s ease, transform 0.4s ease;
 }
 
-.hud-toast-good { border-right-color: var(--good); }
-.hud-toast-bad  { border-right-color: var(--bad); }
-.hud-toast-info { border-right-color: var(--info); }
+.hud-toast-good { border-inline-start-color: var(--good); }
+.hud-toast-bad  { border-inline-start-color: var(--bad); }
+.hud-toast-info { border-inline-start-color: var(--info); }
 
 .hud-toast.is-fading {
   opacity: 0;
   transform: translateY(-8px);
+}
+
+/* ================================================================
+ * Language toggle (built by src/ui/hud.js, buildLangButton())
+ *
+ * DOM contract: hud.js appends this as a sibling of `.hud-bar`, directly
+ * under #hud, and self-styles its size/shape/color/border with INLINE
+ * styles (see that file's own comment on buildLangButton() — it was written
+ * before this stylesheet had a rule for it). Its actual class is
+ * `.hud-lang-btn`. This spec named it `.lang-btn`; both selectors are
+ * targeted below so styling lands regardless of which name integration
+ * settles on — INTEGRATOR: please reconcile the class name between hud.js
+ * and any future callers so only one needs to be kept.
+ *
+ * Everything here is additive (box-shadow / hover / active / transition):
+ * none of it is set inline by hud.js today, so it layers on top of the
+ * inline styles instead of fighting their specificity, giving the button
+ * the same chunky "sticker" lip + press feedback as every other round
+ * control (.zoom-btn, .pwa-install-btn). `.lang-btn` alone also gets a full
+ * standalone declaration so it renders correctly even with no inline
+ * styles at all, e.g. if it's reused somewhere other than the HUD.
+ *
+ * Position: hud.js places it as a fixed-size (flex: 0 0 auto) flex item of
+ * #hud, the same row as the scrollable/masked .hud-bar — the fixed sizing
+ * plus #hud's `gap` reserves this its own edge slot outside the scrollable
+ * stat area, so it can never overlap or get scrolled under the money/income
+ * readouts even at 411px. No extra positioning is needed here.
+ * ================================================================ */
+
+.hud-lang-btn,
+.lang-btn {
+  box-shadow: 0 4px 0 var(--accent-dark), 0 7px 14px rgba(0, 0, 0, 0.35);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+
+.hud-lang-btn:hover:not(:disabled),
+.lang-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  filter: brightness(1.08);
+  box-shadow: 0 6px 0 var(--accent-dark), 0 10px 18px rgba(0, 0, 0, 0.4);
+}
+
+.hud-lang-btn:active:not(:disabled),
+.lang-btn:active:not(:disabled) {
+  transform: translateY(3px);
+  box-shadow: none;
+}
+
+/* Standalone baseline: full round chunky "sticker" button, 44x44 touch
+ * target, matching .zoom-btn — only takes effect where nothing more
+ * specific (e.g. hud.js's inline styles) already set these properties. */
+.lang-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid var(--accent-dark);
+  background: var(--accent);
+  color: #2a1806;
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
 }
 
 /* ================================================================
@@ -854,7 +928,6 @@ button.success:hover:not(:disabled) {
 
   .action-bar {
     top: 58px;
-    flex-direction: row-reverse;
     flex-wrap: wrap;
     left: var(--spacing-sm);
     right: var(--spacing-sm);
@@ -874,6 +947,11 @@ button.success:hover:not(:disabled) {
   .zoom-controls {
     left: var(--spacing-sm);
     gap: var(--spacing-xs);
+  }
+
+  [dir="ltr"] .zoom-controls {
+    left: auto;
+    right: var(--spacing-sm);
   }
 
   .zoom-btn {
@@ -979,6 +1057,18 @@ button.success:hover:not(:disabled) {
   z-index: 90;
 }
 
+/* Mirror to the opposite corner for LTR. Kept as an explicit physical
+ * override (not inset-inline-*) because the phone-mode block further down
+ * pairs this same element's offsets with physical env(safe-area-inset-*)
+ * variables, which are tied to real device edges and must never swap sides
+ * with reading direction — see that block's own [dir="ltr"] override for
+ * why. Staying physical everywhere keeps the cascade predictable across
+ * breakpoints. */
+[dir="ltr"] .zoom-controls {
+  left: auto;
+  right: var(--spacing-md);
+}
+
 .zoom-btn {
   width: 48px;
   height: 48px;
@@ -1052,7 +1142,7 @@ button.success:hover:not(:disabled) {
 .action-bar {
   position: absolute;
   top: 68px;
-  right: var(--spacing-md);
+  inset-inline-end: var(--spacing-md);
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
@@ -1067,7 +1157,7 @@ button.success:hover:not(:disabled) {
   border-radius: var(--radius-md);
   font-size: 13px;
   font-weight: 700;
-  text-align: right;
+  text-align: start;
   box-shadow: 0 4px 0 var(--panel-lip), 0 6px 12px rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(6px);
   transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease, color 0.12s ease;
@@ -1163,7 +1253,6 @@ button.success:hover:not(:disabled) {
   top: 0;
   z-index: 2;
   display: flex;
-  flex-direction: row-reverse;
   align-items: center;
   gap: var(--spacing-md);
   padding: 0 var(--spacing-md);
@@ -1205,7 +1294,6 @@ button.success:hover:not(:disabled) {
 
 .panel-x10-toggle {
   display: flex;
-  flex-direction: row-reverse;
   align-items: center;
   gap: var(--spacing-xs);
   color: var(--text-muted);
@@ -1231,7 +1319,6 @@ button.success:hover:not(:disabled) {
 
 .panel-row {
   display: flex;
-  flex-direction: row-reverse;
   align-items: center;
   justify-content: space-between;
   gap: var(--spacing-md);
@@ -1243,7 +1330,7 @@ button.success:hover:not(:disabled) {
 
 .panel-row-info {
   min-width: 0;
-  text-align: right;
+  text-align: start;
 }
 
 .panel-row-name {
@@ -1368,36 +1455,25 @@ button.success:hover:not(:disabled) {
     height: calc(100% - var(--drawer-collapsed-h) - var(--safe-bottom));
   }
 
-  /* --- Action bar: horizontal scrolling row of round chips, pinned under
-     the HUD so it never eats the floor and never collides with the
-     bottom-left zoom cluster. --- */
+  /* --- Action bar: BUG FIX — this used to be a nowrap horizontal-scroll
+     row with a mask-image edge fade meant to hint "more buttons this way".
+     On real phone widths (verified at 411px) the fade wasn't a reliable
+     affordance — the last button (or two) just sat hard-clipped at the
+     viewport edge with nothing to signal it was reachable by scrolling, so
+     the bar read as broken. Wrapping to as many rows as needed guarantees
+     every button is always fully visible with zero reliance on a scroll
+     gesture nobody is cued to make. Pinned under the HUD so it never eats
+     the floor and never collides with the bottom-left zoom cluster. --- */
   .action-bar {
     position: fixed;
     top: calc(52px + var(--safe-top) + var(--spacing-xs));
     left: calc(var(--spacing-xs) + var(--safe-left));
     right: calc(var(--spacing-xs) + var(--safe-right));
     bottom: auto;
-    flex-direction: row-reverse;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: center;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
     gap: var(--spacing-sm);
-    padding: var(--spacing-xs) var(--spacing-lg);
-    -webkit-mask-image: linear-gradient(
-      to left,
-      transparent 0,
-      #000 20px,
-      #000 calc(100% - 20px),
-      transparent 100%
-    );
-    mask-image: linear-gradient(to left, transparent 0, #000 20px, #000 calc(100% - 20px), transparent 100%);
-  }
-
-  .action-bar::-webkit-scrollbar {
-    display: none;
+    padding: var(--spacing-xs);
   }
 
   .action-btn {
@@ -1420,6 +1496,11 @@ button.success:hover:not(:disabled) {
     left: calc(var(--spacing-sm) + var(--safe-left));
     bottom: calc(var(--drawer-collapsed-h) + var(--safe-bottom) + var(--spacing-sm));
     transition: opacity 0.2s ease;
+  }
+
+  [dir="ltr"] .zoom-controls {
+    left: auto;
+    right: calc(var(--spacing-sm) + var(--safe-right));
   }
 
   .zoom-btn {
@@ -1452,8 +1533,8 @@ button.success:hover:not(:disabled) {
      visible sheet card. --- */
   .panels {
     position: fixed;
-    left: 0;
-    right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     bottom: 0;
     height: auto;
     max-height: none;
@@ -1657,12 +1738,14 @@ button.success:hover:not(:disabled) {
   text-align: center;
 }
 
+/* Logical, not physical: these follow the reading direction so the same class
+ * means "trailing edge" / "leading edge" in both Hebrew (RTL) and English. */
 .text-right {
-  text-align: right;
+  text-align: end;
 }
 
 .text-left {
-  text-align: left;
+  text-align: start;
 }
 
 .flex-center {

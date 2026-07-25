@@ -1,7 +1,7 @@
 /**
  * panels.js — the build/upgrade drawer.
- * Four tabs: מתחמים (venues) / עמדות (stations) / צוות (staff) / מערכות (systems).
- * Each row: Hebrew name, owned count/level, what it does, cost, buy button
+ * Four tabs: venues / stations / staff / systems (labels from t()).
+ * Each row: name, owned count/level, what it does, cost, buy button
  * (disabled + dimmed when unaffordable or maxed out), plus a global "buy x10" toggle.
  *
  * export function mount(root)
@@ -23,6 +23,7 @@ import {
   defOf
 } from '../core/config.js';
 import { canAfford, buy, fmtMoney } from '../core/economy.js';
+import { t, hasKey, dir, onLocaleChanged } from '../core/i18n.js';
 
 /** Maps a purchase kind to its state-table property name (per state.js shape). */
 const STATE_TABLE = {
@@ -33,10 +34,10 @@ const STATE_TABLE = {
 };
 
 const TABS = [
-  { id: 'venues', label: 'מתחמים', kind: 'venue', defs: VENUES, keys: VENUE_KEYS },
-  { id: 'stations', label: 'עמדות', kind: 'station', defs: STATIONS, keys: STATION_KEYS },
-  { id: 'staff', label: 'צוות', kind: 'staff', defs: STAFF, keys: STAFF_KEYS },
-  { id: 'systems', label: 'מערכות', kind: 'system', defs: SYSTEMS, keys: SYSTEM_KEYS }
+  { id: 'venues', labelKey: 'panel.tab.venues', kind: 'venue', defs: VENUES, keys: VENUE_KEYS },
+  { id: 'stations', labelKey: 'panel.tab.stations', kind: 'station', defs: STATIONS, keys: STATION_KEYS },
+  { id: 'staff', labelKey: 'panel.tab.staff', kind: 'staff', defs: STAFF, keys: STAFF_KEYS },
+  { id: 'systems', labelKey: 'panel.tab.systems', kind: 'system', defs: SYSTEMS, keys: SYSTEM_KEYS }
 ];
 
 let activeTabId = TABS[0].id;
@@ -46,6 +47,8 @@ let buyX10 = false;
 let rowsContainer = null;
 /** @type {null | HTMLElement} */
 let tabBarEl = null;
+/** @type {null | HTMLElement} the "×10" checkbox caption, relabeled on locale change. */
+let x10LabelEl = null;
 
 /* ------------------------------------------------------------------
  * Collapsible bottom-sheet behaviour (phones only, no-op on desktop).
@@ -179,15 +182,28 @@ function buildRow(tab, key) {
   row.dataset.key = key;
 
   const info = el('div', 'panel-row-info');
-  info.appendChild(el('div', 'panel-row-name', def.name || key));
-  info.appendChild(el('div', 'panel-row-desc', def.desc || ''));
+  info.appendChild(el('div', 'panel-row-name', def.nameKey && hasKey(def.nameKey) ? t(def.nameKey) : key));
+  info.appendChild(el('div', 'panel-row-desc', def.descKey && hasKey(def.descKey) ? t(def.descKey) : ''));
   const ownedEl = el('div', 'panel-row-owned', '');
   info.appendChild(ownedEl);
 
   const actions = el('div', 'panel-row-actions');
   const costEl = el('span', 'panel-row-cost', '');
-  const buyBtn = el('button', 'panel-buy-btn', 'קנה');
+  const buyBtn = el('button', 'panel-buy-btn', t('panel.buy'));
   buyBtn.type = 'button';
+  /*
+   * English buy/upgrade labels ("Upgrade ×10") run noticeably longer than
+   * their Hebrew counterparts ("שדרג ×10") and this button is narrow on a
+   * 411px phone. styles.css owns .panel-buy-btn's box; this file cannot add
+   * a rule there, so guard the text itself inline: never wrap (which would
+   * grow the row's height and reflow the whole list) and ellipsize instead,
+   * with a title attribute (set alongside the text in update()) so the full
+   * label is still reachable on hover/long-press.
+   */
+  buyBtn.style.whiteSpace = 'nowrap';
+  buyBtn.style.overflow = 'hidden';
+  buyBtn.style.textOverflow = 'ellipsis';
+  buyBtn.style.maxWidth = '100%';
   buyBtn.addEventListener('click', () => purchase(tab, key));
 
   actions.appendChild(costEl);
@@ -264,7 +280,7 @@ function buildDrawerHandle() {
     handle.setAttribute('role', 'button');
     handle.setAttribute('tabindex', '0');
     handle.setAttribute('aria-expanded', 'true');
-    handle.setAttribute('aria-label', 'פתח/סגור חנות');
+    handle.setAttribute('aria-label', t('panel.drawerToggle'));
   } catch (err) {
     // guarded
   }
@@ -382,7 +398,7 @@ function buildTabs() {
     expandDrawerForSelection();
   });
   for (const tab of TABS) {
-    const btn = el('button', 'panel-tab-btn', tab.label);
+    const btn = el('button', 'panel-tab-btn', t(tab.labelKey));
     btn.type = 'button';
     btn.dataset.tab = tab.id;
     btn.addEventListener('click', () => {
@@ -397,6 +413,16 @@ function buildTabs() {
   return bar;
 }
 
+/** Re-applies each tab button's label from the current locale (see relabelStatic()). */
+function relabelTabs() {
+  if (!tabBarEl) return;
+  const buttons = tabBarEl.querySelectorAll('[data-tab]');
+  buttons.forEach((btn) => {
+    const tab = findTab(btn.dataset.tab);
+    btn.textContent = t(tab.labelKey);
+  });
+}
+
 function buildX10Toggle() {
   const label = el('label', 'panel-x10-toggle');
   const checkbox = document.createElement('input');
@@ -409,7 +435,8 @@ function buildX10Toggle() {
     update();
   });
   label.appendChild(checkbox);
-  label.appendChild(el('span', 'panel-x10-label', 'קנייה פי 10'));
+  x10LabelEl = el('span', 'panel-x10-label', t('panel.x10'));
+  label.appendChild(x10LabelEl);
   return label;
 }
 
@@ -417,7 +444,7 @@ export function mount(root) {
   if (!root || typeof root.appendChild !== 'function') return;
 
   const panel = el('div', 'build-panel');
-  panel.setAttribute('dir', 'rtl');
+  panel.setAttribute('dir', dir());
   panelRootEl = panel;
 
   const handle = buildDrawerHandle();
@@ -440,6 +467,27 @@ export function mount(root) {
   unsubscribers.push(bus.on('ui:refresh', () => update()));
   unsubscribers.push(bus.on('world:switched', () => renderActiveTab()));
   unsubscribers.push(bus.on('tier:up', () => update()));
+  unsubscribers.push(onLocaleChanged(() => relabelStatic()));
+}
+
+/**
+ * Re-applies every static (non-data-driven) drawer string from the current
+ * locale — tab labels, the drawer handle's aria-label, the ×10 caption —
+ * then rebuilds the active tab's rows (buildRow() re-reads t() for the buy
+ * button's placeholder text) and recomputes them via update(). Called once
+ * per 'locale:changed' event so a language switch updates the drawer
+ * instantly without a remount.
+ */
+function relabelStatic() {
+  try {
+    if (panelRootEl) panelRootEl.setAttribute('dir', dir());
+    if (drawerHandleEl) drawerHandleEl.setAttribute('aria-label', t('panel.drawerToggle'));
+    if (x10LabelEl) x10LabelEl.textContent = t('panel.x10');
+    relabelTabs();
+  } catch (err) {
+    // never let a relabel pass crash the drawer
+  }
+  renderActiveTab();
 }
 
 export function update() {
@@ -464,10 +512,11 @@ export function update() {
 
     const owned = ownedAmount(tab.kind, entry);
     if (tab.kind === 'system') {
-      meta.ownedEl.textContent = 'רמה ' + owned;
+      meta.ownedEl.textContent = t('panel.level', { level: owned });
+    } else if (entry.level > 1) {
+      meta.ownedEl.textContent = t('panel.ownedLevel', { count: entry.count, level: entry.level });
     } else {
-      const levelSuffix = entry.level > 1 ? ' (רמה ' + entry.level + ')' : '';
-      meta.ownedEl.textContent = 'בבעלות: ' + entry.count + levelSuffix;
+      meta.ownedEl.textContent = t('panel.owned', { count: entry.count });
     }
 
     let info = null;
@@ -486,13 +535,22 @@ export function update() {
     }
 
     if (atMax) {
-      meta.costEl.textContent = 'מקסימום';
-      meta.buyBtn.textContent = '—';
+      meta.costEl.textContent = t('panel.max');
+      meta.buyBtn.textContent = t('common.dash');
+      meta.buyBtn.title = '';
     } else {
-      meta.costEl.textContent = Number.isFinite(info.cost) ? fmtMoney(info.cost) : '—';
+      meta.costEl.textContent = Number.isFinite(info.cost) ? fmtMoney(info.cost) : t('common.dash');
       const isLevelUp = info.type === 'level';
-      const base = isLevelUp ? 'שדרג' : 'קנה';
-      meta.buyBtn.textContent = buyX10 ? base + ' ×10' : base;
+      let label;
+      if (buyX10) {
+        label = isLevelUp ? t('panel.upgradeX10') : t('panel.buyX10');
+      } else {
+        label = isLevelUp ? t('panel.upgrade') : t('panel.buy');
+      }
+      meta.buyBtn.textContent = label;
+      // Full label as a tooltip: the inline ellipsis (see buildRow()) may
+      // clip the English "Upgrade ×10" on a narrow phone button.
+      meta.buyBtn.title = label;
     }
 
     meta.buyBtn.disabled = atMax || !affordable;

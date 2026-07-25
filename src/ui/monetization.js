@@ -12,6 +12,7 @@ import { CONFIG } from '../core/config.js';
 import { bus, toast } from '../core/events.js';
 import { state, save, multiplyOfflineReward } from '../core/state.js';
 import { addMoney, incomeRate, fmtMoney } from '../core/economy.js';
+import { t, onLocaleChanged } from '../core/i18n.js';
 
 /* ================================================================
  *  Module State
@@ -27,15 +28,61 @@ let adTimerInterval = null;
 let adCountdown = 3;
 let lastAdTime = 0;
 let offlineReportBuffer = null;
+let localeUnsubscribe = null;
+
+// Elements of the currently-open ad modal, kept around so a 'locale:changed'
+// event can retext it in place without disturbing the running countdown.
+let adTitleEl = null;
+let adLabelEl = null;
+let adSkipEl = null;
+let adCloseEl = null;
+
+/**
+ * localStorage key for the rewarded-ad cooldown. Persisted directly (like
+ * i18n.js does for the language choice) rather than through state.js: this
+ * module deliberately does not touch state.js's migrate(), which only
+ * round-trips the roulette/blackjack cooldown keys and would silently drop
+ * a new one on reload — see the SPEND_COOLDOWN_MS comment below for the same
+ * reasoning applied to the diamond-spend cooldowns.
+ */
+const AD_COOLDOWN_STORAGE_KEY = 'idleCasino.monetization.lastAdTime';
+
+function storageSafe(fn, fallback) {
+  try {
+    return fn();
+  } catch (err) {
+    return fallback;
+  }
+}
+
+/** Restore the last-ad timestamp so a page reload cannot grant a free ad. */
+function readStoredLastAdTime() {
+  const raw = storageSafe(() => {
+    if (typeof localStorage === 'undefined') return null;
+    return localStorage.getItem(AD_COOLDOWN_STORAGE_KEY);
+  }, null);
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function writeStoredLastAdTime(ts) {
+  storageSafe(() => {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(AD_COOLDOWN_STORAGE_KEY, String(ts));
+  });
+}
 
 // Cooldown for the high-value diamond spends (instant cash / mega boost).
 // Without this, free ad-diamonds (CONFIG.monetization.adDiamonds, no per-day cap)
 // can be laundered into an unlimited stream of instantCash/megaBoost redemptions,
 // each worth a large lump sum of simulated income. This mirrors the pattern used
 // by CONFIG.minigames.cooldownMs / state.cooldowns for roulette & blackjack, but
-// is tracked in-memory here (like the ad cooldown above) since state.js's
-// migrate() only round-trips the roulette/blackjack cooldown keys and would
-// silently drop any new persisted keys on reload.
+// is tracked in-memory only (unlike the ad cooldown above, which is persisted to
+// localStorage) since state.js's migrate() only round-trips the roulette/blackjack
+// cooldown keys and would silently drop any new persisted keys on reload. A reload
+// during this cooldown resets it early — a much smaller exposure than the ad
+// cooldown bug (a free ad each reload), so it is left as a known follow-up rather
+// than widened beyond this module's assigned fix.
 const SPEND_COOLDOWN_MS = {
   instantCash: 1800000, // 30 minutes
   megaBoost: 1800000    // 30 minutes
@@ -102,14 +149,28 @@ function showAdModal(offlineReport) {
   const modal = document.createElement('div');
   modal.className = 'modal ad-modal';
 
+  // Bug fix: the modal previously had NO way to close it during the opening
+  // countdown (only the post-countdown "skip" button, or a backdrop click
+  // that was itself gated on the countdown being done). A real close button,
+  // available from the first frame, means the player is never trapped in the
+  // modal — it abandons the ad (no reward, no report mutation) rather than
+  // completing it.
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'modal-close';
+  closeButton.textContent = '×';
+  closeButton.title = t('common.close');
+  closeButton.setAttribute('aria-label', t('common.close'));
+  modal.appendChild(closeButton);
+
   const title = document.createElement('div');
   title.className = 'modal-title';
-  title.textContent = 'צפיה בפרסומת';
+  title.textContent = t('ad.title');
   modal.appendChild(title);
 
   const label = document.createElement('div');
   label.className = 'ad-label';
-  label.textContent = 'סיים את הצפיה וקבל גמול!';
+  label.textContent = t('ad.label');
   modal.appendChild(label);
 
   const countdown = document.createElement('div');
@@ -119,8 +180,13 @@ function showAdModal(offlineReport) {
 
   const skipButton = document.createElement('button');
   skipButton.className = 'ad-skip-button';
-  skipButton.textContent = 'דלג';
+  skipButton.textContent = t('ad.skip');
   modal.appendChild(skipButton);
+
+  adTitleEl = title;
+  adLabelEl = label;
+  adSkipEl = skipButton;
+  adCloseEl = closeButton;
 
   let localCountdown = adCountdown;
   adTimerInterval = setInterval(() => {
@@ -143,7 +209,16 @@ function showAdModal(offlineReport) {
     adModal = null;
     adBackdrop = null;
     offlineReportBuffer = null;
+    adTitleEl = null;
+    adLabelEl = null;
+    adSkipEl = null;
+    adCloseEl = null;
   };
+
+  // Abandon: closes without granting the reward, at any point in the flow.
+  closeButton.addEventListener('click', () => {
+    closeAd();
+  });
 
   skipButton.addEventListener('click', () => {
     completeAd();
@@ -164,8 +239,21 @@ function showAdModal(offlineReport) {
   adBackdrop = backdrop;
 }
 
+/** Re-apply the active locale's strings to an already-open ad modal in place. */
+function retextAdModal() {
+  if (!adModal) return;
+  if (adTitleEl) adTitleEl.textContent = t('ad.title');
+  if (adLabelEl) adLabelEl.textContent = t('ad.label');
+  if (adSkipEl) adSkipEl.textContent = t('ad.skip');
+  if (adCloseEl) {
+    adCloseEl.title = t('common.close');
+    adCloseEl.setAttribute('aria-label', t('common.close'));
+  }
+}
+
 function completeAd() {
   lastAdTime = Date.now();
+  writeStoredLastAdTime(lastAdTime);
 
   // Double the offline earnings if we have a report.
   // state.multiplyOfflineReward is the single authority for this: it credits
@@ -192,7 +280,7 @@ function completeAd() {
   state.boosts.income.until = Date.now() + boost.seconds * 1000;
   bus.emit('boost:started', { kind: 'income', mult: boost.mult, seconds: boost.seconds });
 
-  toast('🎬 קיבלת בונוס פרסומת! +' + CONFIG.monetization.adDiamonds + ' יהלומים ו-2x הכנסה', 'good');
+  toast(t('ad.reward', { amount: CONFIG.monetization.adDiamonds }), 'good');
   save();
 }
 
@@ -211,12 +299,15 @@ function showShop() {
 
   const title = document.createElement('div');
   title.className = 'modal-title';
-  title.textContent = 'חנות יהלומים';
+  title.textContent = t('shop.title');
   modal.appendChild(title);
 
   const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
   closeBtn.className = 'modal-close';
   closeBtn.textContent = '×';
+  closeBtn.title = t('common.close');
+  closeBtn.setAttribute('aria-label', t('common.close'));
   modal.appendChild(closeBtn);
 
   const content = document.createElement('div');
@@ -227,19 +318,25 @@ function showShop() {
 
   const diamondTitle = document.createElement('div');
   diamondTitle.className = 'shop-section-title';
-  diamondTitle.textContent = 'קניית יהלומים';
+  diamondTitle.textContent = t('shop.section.packs');
   diamondSection.appendChild(diamondTitle);
 
   const diamondGrid = document.createElement('div');
   diamondGrid.className = 'shop-grid';
 
   for (const pack of CONFIG.monetization.diamondPacks) {
+    // Names/prices come from the locale tables (keyed by pack.key), not from
+    // config.js's `name`/`price` fields — config.js is Hebrew-only and out of
+    // scope for this module; CONFIG here only supplies amount/cost/etc.
+    const packName = t('shop.pack.' + pack.key);
+    const packPrice = t('shop.price.' + pack.key);
+
     const item = document.createElement('button');
     item.className = 'shop-item';
 
     const name = document.createElement('div');
     name.className = 'shop-item-name';
-    name.textContent = pack.name;
+    name.textContent = packName;
     item.appendChild(name);
 
     const amount = document.createElement('div');
@@ -249,11 +346,11 @@ function showShop() {
 
     const price = document.createElement('div');
     price.className = 'shop-item-price';
-    price.textContent = pack.price;
+    price.textContent = packPrice;
     item.appendChild(price);
 
     item.addEventListener('click', () => {
-      purchaseDiamonds(pack.amount, pack.name);
+      purchaseDiamonds(pack.amount, packName);
     });
 
     diamondGrid.appendChild(item);
@@ -268,7 +365,7 @@ function showShop() {
 
     const noAdsTitle = document.createElement('div');
     noAdsTitle.className = 'shop-section-title';
-    noAdsTitle.textContent = 'הנחות מיוחדות';
+    noAdsTitle.textContent = t('shop.section.specials');
     noAdsSection.appendChild(noAdsTitle);
 
     const noAdsGrid = document.createElement('div');
@@ -279,17 +376,17 @@ function showShop() {
 
     const noAdsName = document.createElement('div');
     noAdsName.className = 'shop-item-name';
-    noAdsName.textContent = 'ללא פרסומות';
+    noAdsName.textContent = t('shop.noAds');
     noAdsItem.appendChild(noAdsName);
 
     const noAdsDesc = document.createElement('div');
     noAdsDesc.className = 'shop-item-amount';
-    noAdsDesc.textContent = '🚫📺 חד-פעמי';
+    noAdsDesc.textContent = t('shop.noAdsTag');
     noAdsItem.appendChild(noAdsDesc);
 
     const noAdsPrice = document.createElement('div');
     noAdsPrice.className = 'shop-item-price';
-    noAdsPrice.textContent = CONFIG.monetization.noAdsPrice;
+    noAdsPrice.textContent = t('shop.price.noAds');
     noAdsItem.appendChild(noAdsPrice);
 
     noAdsItem.addEventListener('click', () => {
@@ -306,7 +403,7 @@ function showShop() {
 
   const spendTitle = document.createElement('div');
   spendTitle.className = 'shop-section-title';
-  spendTitle.textContent = 'הוצאת יהלומים';
+  spendTitle.textContent = t('shop.section.spend');
   spendSection.appendChild(spendTitle);
 
   const spendGrid = document.createElement('div');
@@ -316,6 +413,9 @@ function showShop() {
     const cooldownRemaining = getSpendCooldownRemaining(spend.key);
     const onCooldown = cooldownRemaining > 0;
     const canAfford = state.diamonds >= spend.cost && !onCooldown;
+    // Name comes from the locale table (keyed by spend.key) rather than
+    // config.js's Hebrew-only `name` field — see the diamondPacks loop above.
+    const spendName = t('shop.spend.' + spend.key);
 
     const item = document.createElement('button');
     item.className = 'shop-item';
@@ -323,7 +423,7 @@ function showShop() {
 
     const name = document.createElement('div');
     name.className = 'shop-item-name';
-    name.textContent = spend.name;
+    name.textContent = spendName;
     item.appendChild(name);
 
     const cost = document.createElement('div');
@@ -334,7 +434,7 @@ function showShop() {
     if (onCooldown) {
       const cd = document.createElement('div');
       cd.className = 'shop-item-amount';
-      cd.textContent = 'זמין שוב בעוד ' + Math.ceil(cooldownRemaining / 60000) + ' דק׳';
+      cd.textContent = t('shop.itemCooldown', { minutes: Math.ceil(cooldownRemaining / 60000) });
       item.appendChild(cd);
     }
 
@@ -368,7 +468,7 @@ function showShop() {
 function purchaseDiamonds(amount, name) {
   state.diamonds += amount;
   bus.emit('diamonds:changed', { diamonds: state.diamonds });
-  toast('✓ קנית ' + name + ' (' + amount + ' יהלומים)', 'good');
+  toast(t('shop.bought', { name, amount }), 'good');
   save();
   // Refresh shop to disable items if needed
   showShop();
@@ -376,7 +476,7 @@ function purchaseDiamonds(amount, name) {
 
 function purchaseNoAds() {
   state.noAds = true;
-  bus.emit('toast', { text: '✓ פרסומות הופסקו! תודה על התמיכה.', kind: 'good' });
+  bus.emit('toast', { text: t('shop.noAdsDone'), kind: 'good' });
   save();
   // Close and reopen the shop so the no-ads section disappears.
   showShop();
@@ -384,13 +484,13 @@ function purchaseNoAds() {
 
 function spendDiamonds(key, cost, spend) {
   if (state.diamonds < cost) {
-    toast('יהלומים לא מספיקים', 'bad');
+    toast(t('shop.notEnough'), 'bad');
     return;
   }
 
   const cooldownRemaining = getSpendCooldownRemaining(key);
   if (cooldownRemaining > 0) {
-    toast('פעולה זו זמינה שוב בעוד ' + Math.ceil(cooldownRemaining / 60000) + ' דקות', 'info');
+    toast(t('shop.spendCooldown', { minutes: Math.ceil(cooldownRemaining / 60000) }), 'info');
     return;
   }
 
@@ -403,7 +503,7 @@ function spendDiamonds(key, cost, spend) {
     state.cooldowns.roulette = 0;
     state.cooldowns.blackjack = 0;
     bus.emit('ui:refresh', {});
-    toast('✓ זמני הצינון אופסו', 'good');
+    toast(t('shop.cooldownReset'), 'good');
   } else if (key === 'instantCash') {
     // Grant `spend.seconds` worth of the active branch's real income rate.
     const w = state.worlds[state.activeWorld];
@@ -417,7 +517,7 @@ function spendDiamonds(key, cost, spend) {
       const seconds = Math.max(0, Number(spend.seconds) || 0);
       const cashAmount = Math.max(1, Math.floor((Number(rate) || 0) * seconds));
       addMoney(w, cashAmount);
-      toast('✓ קיבלת ' + fmtMoney(cashAmount) + ' מזומן', 'good');
+      toast(t('shop.gotCash', { amount: fmtMoney(cashAmount) }), 'good');
     }
     lastInstantCashTime = Date.now();
   } else if (key === 'megaBoost') {
@@ -429,7 +529,7 @@ function spendDiamonds(key, cost, spend) {
       mult: spend.mult,
       seconds: spend.seconds
     });
-    toast('✓ בוסטר ×5 הופעל ל-10 דקות', 'good');
+    toast(t('shop.megaBoostOn'), 'good');
     lastMegaBoostTime = Date.now();
   }
 
@@ -461,8 +561,20 @@ export function mount(mountRoot) {
   // This module should be called externally when the player wants to watch an ad
   // For now, we just initialize state.
 
-  lastAdTime = 0;
+  // Bug fix: this used to hard-reset to 0 on every mount, so reloading the
+  // page always granted a fresh ad regardless of when the last one was
+  // watched. Restore the persisted timestamp instead (see
+  // AD_COOLDOWN_STORAGE_KEY above), mirroring how the mini-game cooldowns
+  // survive a reload via state.cooldowns.
+  lastAdTime = readStoredLastAdTime();
   adCountdown = 3;
+
+  if (!localeUnsubscribe) {
+    localeUnsubscribe = onLocaleChanged(() => {
+      retextAdModal();
+      if (shopModal) showShop();
+    });
+  }
 }
 
 export function update() {
@@ -480,13 +592,13 @@ export function openShop() {
 
 export function tryWatchAd(offlineReport) {
   if (state.noAds) {
-    toast('יש לך את ההנחה "ללא פרסומות"', 'info');
+    toast(t('ad.noAdsOwned'), 'info');
     return false;
   }
 
   if (!canWatchAd()) {
     const remaining = Math.ceil(getAdCooldownRemaining() / 1000);
-    toast('צפיה בפרסומת זמינה ב-' + remaining + ' שניות', 'info');
+    toast(t('ad.cooldown', { seconds: remaining }), 'info');
     return false;
   }
 
