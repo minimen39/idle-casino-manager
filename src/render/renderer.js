@@ -1861,6 +1861,10 @@ function byDepth(a, b) {
 /** Slab / wall geometry, world px. */
 const SLAB_H = 26;
 const WALL_H = 48;
+/** How far below the fit-the-whole-floor zoom the player may pull back.
+ *  Must be < 1 or minZoom collides with fitView() and zoom-out stops working. */
+const ZOOM_OUT_HEADROOM = 0.6;
+
 const BAKE_MAX_PIXELS = 8.4e6;
 const BAKE_COOLDOWN_MS = 220;
 
@@ -2020,8 +2024,19 @@ export class Renderer {
   _updateMinZoom() {
     const b = this._isoB;
     const iw = Math.max(1, b.maxX - b.minX);
-    const widthFit = (this.cssW * 0.95) / iw;
-    this.minZoom = clamp(widthFit, 0.35, 0.9);
+    const ih = Math.max(1, b.maxY - b.minY);
+
+    // The zoom at which the whole diorama just fits the viewport. Height matters
+    // as much as width on a tall phone screen, so fit against both.
+    const fit = Math.min((this.cssW * 0.95) / iw, (this.cssH * 0.95) / ih);
+
+    // minZoom must sit strictly BELOW the fit zoom. It used to be the width-fit
+    // value itself, which meant fitView() landed the camera exactly on its own
+    // floor: on a 411px phone both were 0.61, so the "-" button and pinch-out
+    // were dead on arrival and the player could never pull back from the
+    // default framing. Keep the 0.9 ceiling so figures stay legible on wide
+    // screens, and keep an absolute floor so a huge casino cannot zoom to dust.
+    this.minZoom = clamp(Math.min(fit * ZOOM_OUT_HEADROOM, 0.9), 0.18, 0.9);
   }
 
   /* ---------------- coordinate mapping (the contract) ---------------- */
