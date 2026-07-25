@@ -35,7 +35,7 @@ import {
 } from './config.js';
 import { bus } from './events.js';
 import { state, save, boostMult, setIncomeEstimator } from './state.js';
-import { dealerCoverage } from '../sim/staff.js';
+import { dealerCoverage, dealerSlots } from '../sim/staff.js';
 
 /* ------------------------------------------------------------------ *
  *  Small internal helpers
@@ -89,6 +89,30 @@ export function costOf(kind, key, currentCount) {
  * grow its count, level it up, or nothing (fully maxed / unknown).
  * @returns {{type:'count'|'level', cost:number}|null}
  */
+/**
+ * The unit cap actually in force, which is not always the static `def.maxCount`.
+ *
+ * DEALERS ARE CAPPED BY TABLES. A dealer can only ever man one dealer-requiring
+ * venue, so hiring more dealers than you own tables buys nothing but payroll —
+ * and the old hardcoded `maxCount: 40` was wrong in the other direction too: a
+ * player with 55 blackjack tables could not staff them. The cap now tracks the
+ * floor plan, so 55 tables means 55 dealers.
+ *
+ * Existing saves that already hold more dealers than tables are unharmed: the
+ * caller simply finds count >= maxCount and offers a level-up instead, which is
+ * the same thing it does for any maxed unit.
+ *
+ * @param {any} w world state
+ * @param {'venue'|'station'|'staff'|'system'} kind
+ * @param {string} key
+ * @param {any} def the unit definition
+ * @returns {number} Infinity when the unit has no cap at all
+ */
+function maxCountFor(w, kind, key, def) {
+  if (kind === 'staff' && key === 'dealers') return Math.max(0, dealerSlots(w));
+  return Number.isFinite(def.maxCount) ? def.maxCount : Infinity;
+}
+
 function nextPurchaseInfo(w, kind, key) {
   const def = defOf(kind, key);
   const entry = entryFor(w, kind, key);
@@ -102,11 +126,15 @@ function nextPurchaseInfo(w, kind, key) {
     return { type: 'level', cost };
   }
 
-  const maxCount = Number.isFinite(def.maxCount) ? def.maxCount : Infinity;
+  const maxCount = maxCountFor(w, kind, key, def);
   const count = Math.max(0, Math.floor(entry.count) || 0);
   if (count < maxCount) {
     return { type: 'count', cost: costOf(kind, key, count) };
   }
+  // A dynamic cap of zero means the prerequisite does not exist yet (no tables
+  // to deal at). Offer nothing at all rather than the level-up branch below,
+  // which would happily sell upgrades for a workforce that cannot exist.
+  if (maxCount <= 0) return null;
 
   const maxLevel = CONFIG.economy.maxLevel;
   const level = Math.max(1, Math.floor(entry.level) || 1);

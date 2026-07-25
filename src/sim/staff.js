@@ -236,16 +236,34 @@ function dealerPostForSlot(layout, slot, tile) {
  * @param {object} worldState
  * @returns {number}
  */
-export function dealerCoverage(worldState) {
+/**
+ * How many dealer-requiring venue instances this world owns.
+ *
+ * This is also the cap on how many dealers are worth hiring: a dealer can only
+ * ever man one table, so the 41st dealer on a 40-table floor is pure cost with
+ * no income. economy.js uses it as the dynamic `maxCount` for the dealers unit
+ * — buy 55 blackjack tables and you may hire 55 dealers, not the 40 a hardcoded
+ * cap used to allow.
+ *
+ * @param {any} worldState
+ * @returns {number} 0 when the world has no dealer-requiring venues yet
+ */
+export function dealerSlots(worldState) {
   if (!worldState || !worldState.venues) return 0;
-
-  let neededInstances = 0;
+  let n = 0;
   for (const key of VENUE_KEYS) {
     const def = VENUES[key];
     if (!def || !def.needsDealer) continue;
     const entry = worldState.venues[key];
-    if (entry && Number.isFinite(entry.count)) neededInstances += Math.max(0, entry.count);
+    if (entry && Number.isFinite(entry.count)) n += Math.max(0, entry.count);
   }
+  return n;
+}
+
+export function dealerCoverage(worldState) {
+  if (!worldState || !worldState.venues) return 0;
+
+  const neededInstances = dealerSlots(worldState);
 
   if (neededInstances <= 0) return 1; // nothing needs a dealer -> fully "covered"
 

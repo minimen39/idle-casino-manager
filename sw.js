@@ -53,7 +53,7 @@
  * launch and one tap on "Refresh" runs the new code. Bumping this constant is
  * now an optimisation, not a release requirement.
  */
-var VERSION = 'v6';
+var VERSION = 'v7';
 var CACHE_PREFIX = 'idle-casino-';
 var CACHE_NAME = CACHE_PREFIX + VERSION;
 
